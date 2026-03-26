@@ -1,0 +1,5 @@
+{
+  "name": "Scene Generator",
+  "description": "Generate a video scene from a starting and ending frame using Veo.",
+  "requestFramePermissions": []
+}
