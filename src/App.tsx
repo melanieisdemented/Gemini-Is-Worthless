@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Upload, Video, Loader2, Key, AlertCircle, X, Wand2, Camera, Image as ImageIcon, Settings, Download, ArrowDown, ArrowUp, ArrowRight, Maximize, ZoomIn, Users, RotateCcw, PenTool, MessageSquare, Search } from 'lucide-react';
+import { Upload, Video, Loader2, Key, AlertCircle, X, Wand2, Camera, Image as ImageIcon, Settings, Download, ArrowDown, ArrowUp, ArrowRight, Maximize, ZoomIn, Users, RotateCcw, PenTool, MessageSquare, Search, Flag, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Chatbot } from './components/Chatbot';
 import { ImageGenerator } from './components/ImageGenerator';
@@ -8,6 +8,23 @@ import { Analyzer } from './components/Analyzer';
 import { auth, loginWithGoogle, logout, db, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+
+const ReportIssueButton = ({ error }: { error: string }) => {
+  const [reported, setReported] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        console.error("REPORTED ISSUE TO SUPERVISOR:", error);
+        setReported(true);
+        setTimeout(() => setReported(false), 3000);
+      }}
+      className="ml-auto flex items-center gap-1 px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded text-xs transition-colors"
+    >
+      {reported ? <CheckCircle2 className="w-3 h-3" /> : <Flag className="w-3 h-3" />}
+      {reported ? 'Reported' : 'Report Issue'}
+    </button>
+  );
+};
 
 declare global {
   interface Window {
@@ -244,7 +261,15 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Analysis error:", err);
-      setError(err.message || "Failed to analyze the image.");
+      const errorMessage = err.message?.toLowerCase() || "";
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
+          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
+      } else {
+          setError(err.message || "Failed to analyze the image.");
+      }
     } finally {
       setAnalyzingFrame(null);
     }
@@ -286,8 +311,7 @@ export default function App() {
       if (window.aistudio?.hasSelectedApiKey) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (!hasKey) {
-           setHasApiKey(false);
-           throw new Error("API key not selected.");
+           await window.aistudio.openSelectKey();
         }
       }
 
@@ -311,7 +335,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       }
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-image-preview',
+        model: 'gemini-3.1-flash-image-preview',
         contents: {
           parts: [
             {
@@ -369,6 +393,9 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
           setError("API key session expired or invalid. Please select your API key again.");
       } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
           setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
       } else if (errorMessage.includes("safety") || errorMessage.includes("policy") || errorMessage.includes("blocked")) {
           setError("The generated content was blocked by safety filters. Please try modifying your prompt or base image.");
       } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
@@ -467,7 +494,15 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       }
     } catch (err: any) {
       console.error("Depth generation error:", err);
-      setError(err.message || "An unexpected error occurred during depth generation.");
+      const errorMessage = err.message?.toLowerCase() || "";
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
+          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
+      } else {
+          setError(err.message || "An unexpected error occurred during depth generation.");
+      }
     } finally {
       setIsGeneratingDepth(false);
     }
@@ -589,6 +624,9 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
           setError("API key session expired or invalid. Please select your API key again.");
       } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
           setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
       } else if (errorMessage.includes("safety") || errorMessage.includes("policy") || errorMessage.includes("blocked")) {
           setError("The generated video was blocked by safety filters. Please try modifying your prompt or input images.");
       } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
@@ -801,6 +839,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                 <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
                   <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
                   <p>{error}</p>
+                  <ReportIssueButton error={error} />
                 </div>
               )}
 
@@ -920,8 +959,16 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                 </div>
                 {selectedAngle === 'Custom...' && (
                   <div className="mt-4 p-4 bg-white/5 border border-white/10 rounded-xl space-y-2">
-                    <label className="text-xs font-medium text-white/50 uppercase tracking-wider">Custom Angle Description</label>
+                    <div className="flex justify-between items-center">
+                      <label className="text-xs font-medium text-white/50 uppercase tracking-wider">Custom Angle Description</label>
+                      {customAngle && (
+                        <button onClick={() => setCustomAngle('')} className="text-xs text-white/50 hover:text-white/80 transition-colors flex items-center gap-1">
+                          <X className="w-3 h-3" /> Clear
+                        </button>
+                      )}
+                    </div>
                     <input 
+                      autoFocus
                       type="text"
                       value={customAngle}
                       onChange={(e) => setCustomAngle(e.target.value)}
@@ -933,7 +980,14 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
               </div>
 
               <div className="space-y-2 mt-4">
-                <label className="text-sm font-medium text-white/70 uppercase tracking-wider">Additional Details (Optional)</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-medium text-white/70 uppercase tracking-wider">Additional Details (Optional)</label>
+                  {anglePrompt && (
+                    <button onClick={() => setAnglePrompt('')} className="text-xs text-white/50 hover:text-white/80 transition-colors flex items-center gap-1">
+                      <X className="w-3 h-3" /> Clear
+                    </button>
+                  )}
+                </div>
                 <textarea 
                   value={anglePrompt}
                   onChange={(e) => setAnglePrompt(e.target.value)}
@@ -983,6 +1037,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                 <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
                   <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
                   <p>{error}</p>
+                  <ReportIssueButton error={error} />
                 </div>
               )}
 
@@ -1059,6 +1114,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                 <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
                   <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
                   <p>{error}</p>
+                  <ReportIssueButton error={error} />
                 </div>
               )}
 

@@ -1,6 +1,23 @@
 import React, { useState, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Loader2, Image as ImageIcon, Download, Sparkles, Settings2, Upload, X, Search } from 'lucide-react';
+import { Loader2, Image as ImageIcon, Download, Sparkles, Settings2, Upload, X, Search, Flag, CheckCircle2 } from 'lucide-react';
+
+const ReportIssueButton = ({ error }: { error: string }) => {
+  const [reported, setReported] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        console.error("REPORTED ISSUE TO SUPERVISOR:", error);
+        setReported(true);
+        setTimeout(() => setReported(false), 3000);
+      }}
+      className="ml-auto flex items-center gap-1 px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded text-xs transition-colors mt-2"
+    >
+      {reported ? <CheckCircle2 className="w-3 h-3" /> : <Flag className="w-3 h-3" />}
+      {reported ? 'Reported' : 'Report Issue'}
+    </button>
+  );
+};
 
 export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type: string, prompt: string, url?: string) => void }) {
   const [prompt, setPrompt] = useState('');
@@ -12,6 +29,9 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
   const [error, setError] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<{ data: string; mimeType: string; url: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [negativePrompt, setNegativePrompt] = useState('');
+  const [stylePreset, setStylePreset] = useState('none');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -51,7 +71,15 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
       setPrompt(prev => prev ? `${prev}\n\n${response.text}` : response.text || "");
     } catch (err: any) {
       console.error("Analysis error:", err);
-      setError(err.message || "Failed to analyze the image.");
+      const errorMessage = err.message?.toLowerCase() || "";
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
+          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
+      } else {
+          setError(err.message || "Failed to analyze the image.");
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -83,6 +111,14 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
       const ai = new GoogleGenAI({ apiKey });
       const modelName = usePro ? 'gemini-3-pro-image-preview' : 'gemini-3.1-flash-image-preview';
 
+      let finalPrompt = prompt;
+      if (stylePreset !== 'none') {
+        finalPrompt = `${stylePreset} style. ${finalPrompt}`;
+      }
+      if (negativePrompt.trim()) {
+        finalPrompt = `${finalPrompt}. Do not include: ${negativePrompt}`;
+      }
+
       const parts: any[] = [];
       if (referenceImage) {
         parts.push({
@@ -92,7 +128,7 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
           }
         });
       }
-      parts.push({ text: prompt });
+      parts.push({ text: finalPrompt });
 
       const response = await ai.models.generateContent({
         model: modelName,
@@ -127,7 +163,15 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
 
     } catch (err: any) {
       console.error("Image generation error:", err);
-      setError(err.message || "Failed to generate image.");
+      const errorMessage = err.message?.toLowerCase() || "";
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
+          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
+      } else {
+          setError(err.message || "Failed to generate image.");
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -194,8 +238,19 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-white/80">Prompt</label>
+            <div className="flex justify-between items-center">
+              <label className="text-sm font-medium text-white/80">Prompt</label>
+              {prompt && (
+                <button 
+                  onClick={() => setPrompt('')}
+                  className="text-xs text-white/50 hover:text-white/80 transition-colors flex items-center gap-1"
+                >
+                  <X className="w-3 h-3" /> Clear
+                </button>
+              )}
+            </div>
             <textarea
+              autoFocus
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="A futuristic city at sunset, cyberpunk style..."
@@ -254,6 +309,57 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
                 <option value="4K">4K</option>
               </select>
             </div>
+
+            <div className="pt-2 border-t border-white/10">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="text-xs text-white/50 hover:text-white/80 transition-colors flex items-center gap-1 w-full justify-between"
+              >
+                <span>Diffusers Advanced Mode</span>
+                <span>{showAdvanced ? '−' : '+'}</span>
+              </button>
+            </div>
+
+            {showAdvanced && (
+              <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-white/60">Style Preset</label>
+                  <select
+                    value={stylePreset}
+                    onChange={(e) => setStylePreset(e.target.value)}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
+                  >
+                    <option value="none">None</option>
+                    <option value="Photorealistic">Photorealistic</option>
+                    <option value="Anime">Anime</option>
+                    <option value="Digital Art">Digital Art</option>
+                    <option value="Cinematic">Cinematic</option>
+                    <option value="3D Render">3D Render</option>
+                    <option value="Cyberpunk">Cyberpunk</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-xs font-medium text-white/60">Negative Prompt</label>
+                    {negativePrompt && (
+                      <button 
+                        onClick={() => setNegativePrompt('')}
+                        className="text-[10px] text-white/50 hover:text-white/80 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    value={negativePrompt}
+                    onChange={(e) => setNegativePrompt(e.target.value)}
+                    placeholder="ugly, blurry, low quality..."
+                    className="w-full h-20 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-white/30 transition-colors resize-none"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <button
@@ -275,8 +381,9 @@ export function ImageGenerator({ onSaveGeneration }: { onSaveGeneration?: (type:
           </button>
 
           {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm flex flex-col items-start">
               {error}
+              <ReportIssueButton error={error} />
             </div>
           )}
         </div>

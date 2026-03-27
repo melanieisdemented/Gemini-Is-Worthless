@@ -1,7 +1,24 @@
 import React, { useState, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Loader2, Upload, FileVideo, Image as ImageIcon, Search } from 'lucide-react';
+import { Loader2, Upload, FileVideo, Image as ImageIcon, Search, Flag, CheckCircle2 } from 'lucide-react';
 import Markdown from 'react-markdown';
+
+const ReportIssueButton = ({ error }: { error: string }) => {
+  const [reported, setReported] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        console.error("REPORTED ISSUE TO SUPERVISOR:", error);
+        setReported(true);
+        setTimeout(() => setReported(false), 3000);
+      }}
+      className="ml-auto flex items-center gap-1 px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded text-xs transition-colors mt-2"
+    >
+      {reported ? <CheckCircle2 className="w-3 h-3" /> : <Flag className="w-3 h-3" />}
+      {reported ? 'Reported' : 'Report Issue'}
+    </button>
+  );
+};
 
 export function Analyzer({ onSaveGeneration }: { onSaveGeneration?: (type: string, prompt: string, url?: string) => void }) {
   const [file, setFile] = useState<File | null>(null);
@@ -79,7 +96,15 @@ export function Analyzer({ onSaveGeneration }: { onSaveGeneration?: (type: strin
       }
     } catch (err: any) {
       console.error("Analysis error:", err);
-      setError(err.message || "Failed to analyze the file.");
+      const errorMessage = err.message?.toLowerCase() || "";
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
+          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
+      } else {
+          setError(err.message || "Failed to analyze the file.");
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -160,8 +185,9 @@ export function Analyzer({ onSaveGeneration }: { onSaveGeneration?: (type: strin
           </button>
 
           {error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm flex flex-col items-start">
               {error}
+              <ReportIssueButton error={error} />
             </div>
           )}
         </div>

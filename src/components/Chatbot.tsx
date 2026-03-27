@@ -1,7 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, GenerateContentResponse, ThinkingLevel } from '@google/genai';
-import { Send, Loader2, Search, MapPin, Brain, Image as ImageIcon, X } from 'lucide-react';
+import { Send, Loader2, Search, MapPin, Brain, Image as ImageIcon, X, Flag, CheckCircle2 } from 'lucide-react';
 import Markdown from 'react-markdown';
+
+const ReportIssueButton = ({ error }: { error: string }) => {
+  const [reported, setReported] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        console.error("REPORTED ISSUE TO SUPERVISOR:", error);
+        setReported(true);
+        setTimeout(() => setReported(false), 3000);
+      }}
+      className="mt-2 flex items-center gap-1 px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded text-xs transition-colors"
+    >
+      {reported ? <CheckCircle2 className="w-3 h-3" /> : <Flag className="w-3 h-3" />}
+      {reported ? 'Reported' : 'Report Issue'}
+    </button>
+  );
+};
 
 interface Message {
   role: 'user' | 'model';
@@ -131,7 +148,15 @@ export function Chatbot({ onSaveGeneration }: { onSaveGeneration?: (type: string
       }
     } catch (error: any) {
       console.error("Chat error:", error);
-      setMessages(prev => [...prev, { role: 'model', text: `Error: ${error.message || 'Something went wrong.'}` }]);
+      const errorMessage = error.message?.toLowerCase() || "";
+      let errorText = error.message || 'Something went wrong.';
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
+          errorText = "You have exceeded your API quota. Please try again later or check your billing details.";
+          if (window.aistudio?.openSelectKey) {
+             window.aistudio.openSelectKey();
+          }
+      }
+      setMessages(prev => [...prev, { role: 'model', text: `Error: ${errorText}` }]);
     } finally {
       setIsLoading(false);
     }
@@ -175,6 +200,9 @@ export function Chatbot({ onSaveGeneration }: { onSaveGeneration?: (type: string
               )}
               <div className="text-sm leading-relaxed markdown-body">
                 <Markdown>{msg.text}</Markdown>
+                {msg.text.startsWith('Error:') && (
+                  <ReportIssueButton error={msg.text} />
+                )}
               </div>
             </div>
           </div>
@@ -218,6 +246,7 @@ export function Chatbot({ onSaveGeneration }: { onSaveGeneration?: (type: string
             onChange={handleImageUpload}
           />
           <input
+            autoFocus
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
