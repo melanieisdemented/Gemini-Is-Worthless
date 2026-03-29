@@ -1,13 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI } from '@google/genai';
-import { Upload, Video, Loader2, Key, AlertCircle, X, Wand2, Camera, Image as ImageIcon, Settings, Download, ArrowDown, ArrowUp, ArrowRight, Maximize, ZoomIn, Users, RotateCcw, PenTool, MessageSquare, Search, Flag, CheckCircle2 } from 'lucide-react';
+import { GoogleGenAI, VideoGenerationReferenceType } from '@google/genai';
+import { pipeline, env } from '@huggingface/transformers';
+import { Upload, Video, Loader2, Key, AlertCircle, X, Wand2, Camera, Image as ImageIcon, Settings, Download, ArrowDown, ArrowUp, ArrowRight, Maximize, ZoomIn, Users, RotateCcw, PenTool, MessageSquare, Search, Flag, CheckCircle2, Mic, Film } from 'lucide-react';
+
+// Configure transformers.js to use the Hugging Face Hub
+env.allowLocalModels = false;
 import { motion, AnimatePresence } from 'motion/react';
 import { Chatbot } from './components/Chatbot';
 import { ImageGenerator } from './components/ImageGenerator';
 import { Analyzer } from './components/Analyzer';
-import { auth, loginWithGoogle, logout, db, handleFirestoreError, OperationType } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { AudioGenerator } from './components/AudioGenerator';
+import { VideoToImageStudio } from './components/VideoToImageStudio';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -108,17 +111,22 @@ function FrameUploader({ label, frame, onUpload, onClear, onAnalyze, isAnalyzing
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'video' | 'angles' | 'depth' | 'chat' | 'image' | 'analyze'>('video');
+  const [activeTab, setActiveTab] = useState<'studio' | 'video' | 'angles' | 'depth' | 'chat' | 'image' | 'analyze' | 'audio'>('studio');
   const [firstFrame, setFirstFrame] = useState<FrameData | null>(null);
   const [lastFrame, setLastFrame] = useState<FrameData | null>(null);
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Initializing...');
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
+  const [generatedVideoObj, setGeneratedVideoObj] = useState<any>(null);
+  const [isExtending, setIsExtending] = useState(false);
+  const [cameraMotion, setCameraMotion] = useState('None');
   
   const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
   const [frameRate, setFrameRate] = useState('30');
-  const [duration, setDuration] = useState('5');
+  const [targetDuration, setTargetDuration] = useState('5');
+  const [useAdvancedInterpolation, setUseAdvancedInterpolation] = useState(false);
+  const [referenceImages, setReferenceImages] = useState<FrameData[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -138,8 +146,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState<boolean>(true);
   const [analyzingFrame, setAnalyzingFrame] = useState<'firstFrame' | 'lastFrame' | 'baseImage' | 'depthImage' | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
 
   const PRESET_ANGLES = [
     { id: "Bird's-eye view (Top down)", label: "Bird's-eye view", icon: ArrowDown, desc: "Top down" },
@@ -160,13 +166,6 @@ export default function App() {
       }
     };
     checkApiKey();
-
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsAuthReady(true);
-    });
-
-    return () => unsubscribe();
   }, []);
 
   const handleSelectApiKey = async () => {
@@ -177,22 +176,6 @@ export default function App() {
       } catch (e) {
         console.error("Failed to select API key", e);
       }
-    }
-  };
-
-  const saveGenerationToFirestore = async (type: string, promptText: string, resultUrl?: string) => {
-    if (!user) return;
-    try {
-      await addDoc(collection(db, 'generations'), {
-        id: crypto.randomUUID(),
-        userId: user.uid,
-        type,
-        prompt: promptText,
-        resultUrl: resultUrl || '',
-        createdAt: serverTimestamp()
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'generations');
     }
   };
 
@@ -261,9 +244,11 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Analysis error:", err);
-      const errorMessage = err.message?.toLowerCase() || "";
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
-          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
+      const errorMessage = errorString.toLowerCase();
+      
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
+          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
           if (window.aistudio?.openSelectKey) {
              window.aistudio.openSelectKey();
           }
@@ -295,6 +280,81 @@ export default function App() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const handleExtendVideo = async () => {
+    if (!generatedVideoObj) return;
+
+    setIsExtending(true);
+    setError(null);
+    setLoadingMessage("Extending video by 7 seconds...");
+
+    try {
+      if (window.aistudio?.hasSelectedApiKey) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey) {
+           setHasApiKey(false);
+           throw new Error("API key not selected.");
+        }
+      }
+
+      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const ai = new GoogleGenAI({ apiKey });
+
+      let operation = await ai.models.generateVideos({
+        model: 'veo-3.1-generate-preview',
+        prompt: prompt || 'Continue the scene smoothly',
+        video: generatedVideoObj,
+        config: {
+          numberOfVideos: 1,
+          resolution: '720p',
+          aspectRatio: '16:9'
+        }
+      });
+
+      const interval = setInterval(() => {
+        setLoadingMessage("Still extending video...");
+      }, 15000);
+
+      while (!operation.done) {
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        operation = await ai.operations.getVideosOperation({operation: operation});
+      }
+
+      clearInterval(interval);
+
+      if (operation.error) {
+        throw new Error((operation.error as any).message || "Failed to extend video");
+      }
+
+      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+      
+      if (!downloadLink) {
+        throw new Error("No video URI returned after extension.");
+      }
+
+      const response = await fetch(downloadLink, {
+        method: 'GET',
+        headers: {
+          'x-goog-api-key': apiKey || '',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to download extended video");
+      }
+
+      const blob = await response.blob();
+      const videoUrl = URL.createObjectURL(blob);
+      setGeneratedVideoUrl(videoUrl);
+      setGeneratedVideoObj(operation.response?.generatedVideos?.[0]?.video);
+
+    } catch (err: any) {
+      console.error("Video extension error:", err);
+      setError(err.message || "An unexpected error occurred during video extension.");
+    } finally {
+      setIsExtending(false);
+    }
   };
 
   const handleGenerateAngle = async () => {
@@ -382,17 +442,17 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       const url = URL.createObjectURL(blob);
 
       setGeneratedAngleUrl(url);
-      saveGenerationToFirestore('angle', promptText, '');
 
     } catch (err: any) {
       console.error("Image generation error:", err);
-      const errorMessage = err.message?.toLowerCase() || "";
+      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
+      const errorMessage = errorString.toLowerCase();
       
       if (errorMessage.includes("requested entity was not found")) {
           setHasApiKey(false);
           setError("API key session expired or invalid. Please select your API key again.");
-      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
-          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
+          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
           if (window.aistudio?.openSelectKey) {
              window.aistudio.openSelectKey();
           }
@@ -418,10 +478,10 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
 
     setIsGeneratingDepth(true);
     setError(null);
-    setLoadingMessage("Estimating depth map with ZoeDepth...");
+    setLoadingMessage("Loading Depth-Anything model (this may take a moment on first run)...");
 
     try {
-      // Resize image to max 1024x1024 for Replicate to avoid payload limits
+      // Resize image to max 1024x1024 to avoid memory issues in browser
       const resizedDataUrl = await new Promise<string>((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
@@ -454,69 +514,53 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
         img.src = depthImage.url;
       });
 
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      const ai = new GoogleGenAI({ apiKey });
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: {
-          parts: [
-            {
-              text: "Generate a highly accurate, high-contrast, grayscale depth map of this image. The closest objects should be pure white, and the furthest background should be pure black. Do not add any other colors or textures."
-            },
-            {
-              inlineData: {
-                data: depthImage.data,
-                mimeType: depthImage.mimeType
-              }
-            }
-          ]
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: "1:1",
-            imageSize: "1K"
-          }
-        }
-      });
-
-      let foundImage = false;
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          setGeneratedDepthUrl(`data:${part.inlineData.mimeType};base64,${part.inlineData.data}`);
-          foundImage = true;
-          break;
-        }
+      // Initialize the pipeline
+      const estimator = await pipeline('depth-estimation', 'Xenova/depth-anything-small-hf');
+      
+      setLoadingMessage("Estimating depth map with Depth-Anything...");
+      
+      // Run depth estimation
+      const output = await estimator(resizedDataUrl);
+      
+      const result = Array.isArray(output) ? output[0] : output;
+      const depthRaw = (result as any).depth;
+      
+      // Convert RawImage to Data URL
+      const canvas = document.createElement('canvas');
+      canvas.width = depthRaw.width;
+      canvas.height = depthRaw.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Could not get canvas context");
+      
+      const imageData = ctx.createImageData(depthRaw.width, depthRaw.height);
+      for (let i = 0; i < depthRaw.data.length; i++) {
+        const val = depthRaw.data[i];
+        imageData.data[i * 4] = val;     // R
+        imageData.data[i * 4 + 1] = val; // G
+        imageData.data[i * 4 + 2] = val; // B
+        imageData.data[i * 4 + 3] = 255; // A
       }
-
-      if (!foundImage) {
-        throw new Error("No depth map image returned from Gemini.");
-      }
+      ctx.putImageData(imageData, 0, 0);
+      
+      setGeneratedDepthUrl(canvas.toDataURL('image/jpeg', 0.9));
     } catch (err: any) {
       console.error("Depth generation error:", err);
-      const errorMessage = err.message?.toLowerCase() || "";
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
-          setError("You have exceeded your API quota. Please try again later or check your billing details.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
-      } else {
-          setError(err.message || "An unexpected error occurred during depth generation.");
-      }
+      setError(err.message || "An unexpected error occurred during depth generation.");
     } finally {
       setIsGeneratingDepth(false);
     }
   };
 
   const handleGenerate = async () => {
-    if (!firstFrame || !lastFrame) {
-      setError("Please provide both first and last frames.");
+    if (!firstFrame && !prompt.trim()) {
+      setError("Please provide at least a first frame or a text prompt.");
       return;
     }
 
     setIsGenerating(true);
     setError(null);
     setGeneratedVideoUrl(null);
+    setGeneratedVideoObj(null);
     setLoadingMessage("Starting video generation...");
 
     try {
@@ -531,25 +575,58 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
       const ai = new GoogleGenAI({ apiKey });
 
-      let safePrompt = prompt || 'A smooth transition between the two frames';
-      safePrompt = `${safePrompt}. Video should be ${duration} seconds long at ${frameRate} frames per second.`;
+      let safePrompt = prompt || (lastFrame ? 'A smooth transition between the two frames' : 'A cinematic video of this scene');
+      safePrompt = `${safePrompt}. Video should be ${targetDuration} seconds long at ${frameRate} frames per second.`;
+      
+      if (cameraMotion !== 'None') {
+        safePrompt += ` Camera motion: ${cameraMotion}.`;
+      }
+      
+      if (useAdvancedInterpolation) {
+        safePrompt += ` CRITICAL INSTRUCTION: Act as an advanced frame interpolation algorithm. Ensure the transition between the first and last frame is exceptionally smooth, physically realistic, and free of artifacts. Maintain perfect temporal consistency and fluid motion dynamics.`;
+      }
+
       // Sanitize prompt to avoid the "photorealistic children" filter if the user typed it
       safePrompt = safePrompt.replace(/\b(child|children|kid|kids|boy|boys|girl|girls|toddler|toddlers|baby|babies|minor|minors|teen|teenager|youth)\b/gi, "young adult");
 
+      const referenceImagesPayload: any[] = [];
+      if (referenceImages.length > 0) {
+        for (const img of referenceImages) {
+          if (img) {
+            referenceImagesPayload.push({
+              image: {
+                imageBytes: img.data,
+                mimeType: img.mimeType,
+              },
+              referenceType: VideoGenerationReferenceType.ASSET,
+            });
+          }
+        }
+      }
+
+      const isProModel = useAdvancedInterpolation || referenceImagesPayload.length > 0 || targetDuration !== '5';
+
       let operation = await ai.models.generateVideos({
-        model: 'veo-3.1-fast-generate-preview',
+        model: isProModel ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview',
         prompt: safePrompt,
-        image: {
-          imageBytes: firstFrame.data,
-          mimeType: firstFrame.mimeType,
-        },
+        ...(firstFrame ? {
+          image: {
+            imageBytes: firstFrame.data,
+            mimeType: firstFrame.mimeType,
+          }
+        } : {}),
         config: {
           numberOfVideos: 1,
-          resolution: resolution,
-          lastFrame: {
-            imageBytes: lastFrame.data,
-            mimeType: lastFrame.mimeType,
-          },
+          resolution: isProModel ? '720p' : resolution,
+          ...(lastFrame ? {
+            lastFrame: {
+              imageBytes: lastFrame.data,
+              mimeType: lastFrame.mimeType,
+            }
+          } : {}),
+          ...(referenceImagesPayload.length > 0 ? {
+            referenceImages: referenceImagesPayload
+          } : {}),
           aspectRatio: '16:9'
         }
       });
@@ -574,13 +651,48 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
         operation = await ai.operations.getVideosOperation({operation: operation});
       }
 
-      clearInterval(interval);
-
       if (operation.error) {
+        clearInterval(interval);
         throw new Error((operation.error as any).message || "Failed to generate video");
       }
 
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+      let currentVideoObj = operation.response?.generatedVideos?.[0]?.video;
+      
+      // Handle automatic extensions if target duration is > 5s
+      const extensionsNeeded = targetDuration === '19' ? 2 : (targetDuration === '12' ? 1 : 0);
+      
+      for (let i = 0; i < extensionsNeeded; i++) {
+        setLoadingMessage(`Extending video (Part ${i + 2} of ${extensionsNeeded + 1})...`);
+        
+        let extOperation = await ai.models.generateVideos({
+          model: 'veo-3.1-generate-preview',
+          prompt: safePrompt || 'Continue the scene smoothly',
+          video: currentVideoObj,
+          config: {
+            numberOfVideos: 1,
+            resolution: '720p',
+            aspectRatio: '16:9'
+          }
+        });
+
+        while (!extOperation.done) {
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          extOperation = await ai.operations.getVideosOperation({operation: extOperation});
+        }
+
+        if (extOperation.error) {
+          console.error("Extension failed, using video generated so far.", extOperation.error);
+          break; // Stop extending but keep the video we have so far
+        }
+        
+        if (extOperation.response?.generatedVideos?.[0]?.video) {
+          currentVideoObj = extOperation.response.generatedVideos[0].video;
+        }
+      }
+
+      clearInterval(interval);
+
+      const downloadLink = currentVideoObj?.uri;
       
       if (!downloadLink) {
         console.error("Full operation result:", operation);
@@ -613,17 +725,18 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       const blob = await response.blob();
       const videoUrl = URL.createObjectURL(blob);
       setGeneratedVideoUrl(videoUrl);
-      saveGenerationToFirestore('video', prompt, downloadLink);
+      setGeneratedVideoObj(currentVideoObj);
 
     } catch (err: any) {
       console.error("Video generation error:", err);
-      const errorMessage = err.message?.toLowerCase() || "";
+      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
+      const errorMessage = errorString.toLowerCase();
       
       if (errorMessage.includes("requested entity was not found")) {
           setHasApiKey(false);
           setError("API key session expired or invalid. Please select your API key again.");
-      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
-          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
+          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
           if (window.aistudio?.openSelectKey) {
              window.aistudio.openSelectKey();
           }
@@ -677,39 +790,21 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       <main className="relative max-w-5xl mx-auto px-6 py-12 flex flex-col gap-8">
         <header className="flex items-start justify-between">
           <div className="space-y-4">
-            <h1 className="text-4xl md:text-5xl font-light tracking-tight">Scene Generator</h1>
+            <h1 className="text-4xl md:text-5xl font-light tracking-tight">Video Synthesis Studio</h1>
             <p className="text-white/50 max-w-xl">
-              Generate video transitions or explore alternate camera angles of your scenes.
+              Analyze, ingest, and adapt. Extract keyframes, analyze scenes, and synthesize new images or videos.
             </p>
-          </div>
-          <div>
-            {isAuthReady && (
-              user ? (
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    {user.photoURL && <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full" />}
-                    <span className="text-sm text-white/70">{user.displayName || user.email}</span>
-                  </div>
-                  <button 
-                    onClick={logout}
-                    className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm rounded-full transition-colors"
-                  >
-                    Sign Out
-                  </button>
-                </div>
-              ) : (
-                <button 
-                  onClick={loginWithGoogle}
-                  className="px-4 py-2 bg-white text-black text-sm rounded-full font-medium hover:bg-white/90 transition-colors"
-                >
-                  Sign In with Google
-                </button>
-              )
-            )}
           </div>
         </header>
 
         <div className="flex justify-center gap-4 mb-4 flex-wrap">
+          <button 
+            onClick={() => { setActiveTab('studio'); setError(null); }}
+            className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'studio' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+          >
+            <Film className="w-4 h-4" />
+            Video2Image
+          </button>
           <button 
             onClick={() => { setActiveTab('video'); setError(null); }}
             className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'video' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
@@ -729,7 +824,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
             className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'depth' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
           >
             <ImageIcon className="w-4 h-4" />
-            ZoeDepth
+            Depth-Anything
           </button>
           <button 
             onClick={() => { setActiveTab('chat'); setError(null); }}
@@ -752,7 +847,20 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
             <Search className="w-4 h-4" />
             Analyze
           </button>
+          <button 
+            onClick={() => { setActiveTab('audio'); setError(null); }}
+            className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'audio' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+          >
+            <Mic className="w-4 h-4" />
+            Audio
+          </button>
         </div>
+
+        {activeTab === 'studio' && (
+          <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <VideoToImageStudio />
+          </div>
+        )}
 
         {activeTab === 'video' && (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -775,6 +883,48 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
               />
             </div>
 
+            <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-center gap-2 mb-2">
+                <h3 className="text-sm font-medium text-white/70 uppercase tracking-wider">Reference Images (Identity Preservation)</h3>
+                <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full">Max 3</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {[0, 1, 2].map((index) => (
+                  <FrameUploader
+                    key={index}
+                    label={`Reference ${index + 1}`}
+                    frame={referenceImages[index] || null}
+                    onUpload={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onloadend = () => {
+                          const base64String = reader.result as string;
+                          const base64Data = base64String.split(',')[1];
+                          const newRefImages = [...referenceImages];
+                          newRefImages[index] = {
+                            data: base64Data,
+                            mimeType: file.type,
+                            url: URL.createObjectURL(file)
+                          };
+                          setReferenceImages(newRefImages);
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    onClear={() => {
+                      const newRefImages = [...referenceImages];
+                      newRefImages.splice(index, 1);
+                      setReferenceImages(newRefImages);
+                    }}
+                    onAnalyze={() => {}}
+                    isAnalyzing={false}
+                  />
+                ))}
+              </div>
+              <p className="text-xs text-white/40 text-center">Reference images are used to preserve identity and style across the generated video.</p>
+            </div>
+
             <div className="space-y-4 max-w-2xl mx-auto w-full">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-white/70 uppercase tracking-wider">Prompt (Optional)</label>
@@ -787,52 +937,80 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
               </div>
 
               <div className="flex flex-col gap-4">
-                <button
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="flex items-center gap-2 text-sm text-white/50 hover:text-white transition-colors w-fit"
-                >
-                  <Settings className="w-4 h-4" />
-                  {showSettings ? 'Hide Video Settings' : 'Show Video Settings'}
-                </button>
-
-                {showSettings && (
-                  <div className="grid grid-cols-3 gap-4 p-4 bg-white/5 border border-white/10 rounded-xl animate-in fade-in slide-in-from-top-2">
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Resolution</label>
-                      <select
-                        value={resolution}
-                        onChange={(e) => setResolution(e.target.value as '720p' | '1080p')}
-                        className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                      >
-                        <option value="720p">720p</option>
-                        <option value="1080p">1080p</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Frame Rate</label>
-                      <select
-                        value={frameRate}
-                        onChange={(e) => setFrameRate(e.target.value)}
-                        className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                      >
-                        <option value="24">24 fps</option>
-                        <option value="30">30 fps</option>
-                        <option value="60">60 fps</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Duration</label>
-                      <select
-                        value={duration}
-                        onChange={(e) => setDuration(e.target.value)}
-                        className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                      >
-                        <option value="5">5 seconds</option>
-                        <option value="7">7 seconds</option>
-                      </select>
-                    </div>
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4 bg-white/5 border border-white/10 rounded-xl">
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Resolution</label>
+                    <select
+                      value={resolution}
+                      onChange={(e) => setResolution(e.target.value as '720p' | '1080p')}
+                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
+                    >
+                      <option value="720p">720p</option>
+                      <option value="1080p">1080p</option>
+                    </select>
                   </div>
-                )}
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Frame Rate</label>
+                    <select
+                      value={frameRate}
+                      onChange={(e) => setFrameRate(e.target.value)}
+                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
+                    >
+                      <option value="24">24 fps</option>
+                      <option value="30">30 fps</option>
+                      <option value="60">60 fps</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Duration</label>
+                    <select
+                      value={targetDuration}
+                      onChange={(e) => setTargetDuration(e.target.value)}
+                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
+                    >
+                      <option value="5">5 seconds (Base)</option>
+                      <option value="12">12 seconds (Extended)</option>
+                      <option value="19">19 seconds (Double Extended)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Camera Motion</label>
+                    <select
+                      value={cameraMotion}
+                      onChange={(e) => setCameraMotion(e.target.value)}
+                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
+                    >
+                      <option value="None">None</option>
+                      <option value="Pan Left">Pan Left</option>
+                      <option value="Pan Right">Pan Right</option>
+                      <option value="Pan Up">Pan Up</option>
+                      <option value="Pan Down">Pan Down</option>
+                      <option value="Zoom In">Zoom In</option>
+                      <option value="Zoom Out">Zoom Out</option>
+                    </select>
+                  </div>
+                  <div className="sm:col-span-4 pt-2 border-t border-white/10">
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <div className="relative flex items-center">
+                        <input 
+                          type="checkbox" 
+                          checked={useAdvancedInterpolation || referenceImages.some(img => img !== null) || targetDuration !== '5'}
+                          disabled={referenceImages.some(img => img !== null) || targetDuration !== '5'}
+                          onChange={(e) => setUseAdvancedInterpolation(e.target.checked)}
+                          className="sr-only" 
+                        />
+                        <div className={`w-10 h-5 rounded-full transition-colors ${(useAdvancedInterpolation || referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'bg-blue-500' : 'bg-white/20'} ${(referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'opacity-50' : ''}`}></div>
+                        <div className={`absolute left-1 top-1 w-3 h-3 bg-white rounded-full transition-transform ${(useAdvancedInterpolation || referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'translate-x-5' : 'translate-x-0'}`}></div>
+                      </div>
+                      <div>
+                        <p className={`text-sm font-medium transition-colors ${(referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'text-blue-400' : 'text-white group-hover:text-blue-400'}`}>
+                          Advanced Frame Interpolation {(referenceImages.some(img => img !== null) || targetDuration !== '5') && '(Enabled by Pro Features)'}
+                        </p>
+                        <p className="text-xs text-white/50">Enhance smoothness and realism of generated video transitions.</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
               </div>
 
               {error && (
@@ -845,7 +1023,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
 
               <button
                 onClick={handleGenerate}
-                disabled={isGenerating || !firstFrame || !lastFrame}
+                disabled={isGenerating || (!firstFrame && !prompt.trim())}
                 className="w-full py-4 bg-white text-black rounded-xl font-medium hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
               >
                 {isGenerating ? (
@@ -906,6 +1084,14 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                     >
                       <Camera className="w-4 h-4" />
                       Save Current Frame
+                    </button>
+                    <button
+                      onClick={handleExtendVideo}
+                      disabled={isExtending || !generatedVideoObj}
+                      className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isExtending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Video className="w-4 h-4" />}
+                      {isExtending ? "Extending..." : "Extend Video (+7s)"}
                     </button>
                     <a 
                       href={generatedVideoUrl} 
@@ -1103,10 +1289,10 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
               <div className="space-y-4 p-6 bg-white/5 border border-white/10 rounded-2xl">
                 <div className="flex items-center gap-3 mb-2">
                   <ImageIcon className="w-5 h-5 text-[#0096ff]" />
-                  <h3 className="text-lg font-medium">Gemini Depth Estimation</h3>
+                  <h3 className="text-lg font-medium">Depth-Anything Estimation</h3>
                 </div>
                 <p className="text-sm text-white/60 leading-relaxed">
-                  Uses Gemini to generate highly accurate 3D depth maps from a single 2D image.
+                  Uses the Depth-Anything model to generate highly accurate 3D depth maps from a single 2D image.
                 </p>
               </div>
 
@@ -1151,10 +1337,10 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                     className="w-full h-full object-contain"
                   />
                 </div>
-                <div className="flex justify-center">
+                <div className="flex flex-col items-center gap-4">
                   <a 
                     href={generatedDepthUrl} 
-                    download="depth-map.png"
+                    download="depth-map.jpg"
                     className="text-sm text-white/50 hover:text-white transition-colors"
                   >
                     Download Depth Map
@@ -1177,7 +1363,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
                   Chat with Gemini to analyze images, search the web, check Google Maps, or solve complex problems using high-level thinking.
                 </p>
               </div>
-              <Chatbot onSaveGeneration={saveGenerationToFirestore} />
+              <Chatbot />
             </div>
           </div>
         )}
@@ -1185,7 +1371,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
         {activeTab === 'image' && (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="max-w-6xl mx-auto">
-              <ImageGenerator onSaveGeneration={saveGenerationToFirestore} />
+              <ImageGenerator />
             </div>
           </div>
         )}
@@ -1193,7 +1379,15 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
         {activeTab === 'analyze' && (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="max-w-6xl mx-auto">
-              <Analyzer onSaveGeneration={saveGenerationToFirestore} />
+              <Analyzer />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'audio' && (
+          <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="max-w-4xl mx-auto">
+              <AudioGenerator />
             </div>
           </div>
         )}

@@ -20,7 +20,7 @@ const ReportIssueButton = ({ error }: { error: string }) => {
   );
 };
 
-export function Analyzer({ onSaveGeneration }: { onSaveGeneration?: (type: string, prompt: string, url?: string) => void }) {
+export function Analyzer() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -90,15 +90,13 @@ export function Analyzer({ onSaveGeneration }: { onSaveGeneration?: (type: strin
 
       const responseText = response.text || "No analysis generated.";
       setResult(responseText);
-      
-      if (onSaveGeneration) {
-        onSaveGeneration('analyze', finalPrompt, '');
-      }
     } catch (err: any) {
       console.error("Analysis error:", err);
-      const errorMessage = err.message?.toLowerCase() || "";
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
-          setError("You have exceeded your API quota. Please try again later or check your billing details.");
+      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
+      const errorMessage = errorString.toLowerCase();
+      
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
+          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
           if (window.aistudio?.openSelectKey) {
              window.aistudio.openSelectKey();
           }

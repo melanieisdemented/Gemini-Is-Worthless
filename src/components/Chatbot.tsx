@@ -27,7 +27,7 @@ interface Message {
   image?: { data: string; mimeType: string; url: string };
 }
 
-export function Chatbot({ onSaveGeneration }: { onSaveGeneration?: (type: string, prompt: string, url?: string) => void }) {
+export function Chatbot() {
   const [messages, setMessages] = useState<Message[]>([
     { role: 'model', text: 'Hello! I am your AI assistant. I can search the web, check Google Maps, analyze images, and solve complex problems. How can I help you today?' }
   ]);
@@ -143,15 +143,13 @@ export function Chatbot({ onSaveGeneration }: { onSaveGeneration?: (type: string
       }
 
       setMessages(prev => [...prev, { role: 'model', text: responseText }]);
-      if (onSaveGeneration) {
-        onSaveGeneration('chat', userMessage || 'Image Analysis', '');
-      }
     } catch (error: any) {
       console.error("Chat error:", error);
-      const errorMessage = error.message?.toLowerCase() || "";
+      const errorString = typeof error === 'string' ? error : JSON.stringify(error, Object.getOwnPropertyNames(error));
+      const errorMessage = errorString.toLowerCase();
       let errorText = error.message || 'Something went wrong.';
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted")) {
-          errorText = "You have exceeded your API quota. Please try again later or check your billing details.";
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
+          errorText = "You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.";
           if (window.aistudio?.openSelectKey) {
              window.aistudio.openSelectKey();
           }
