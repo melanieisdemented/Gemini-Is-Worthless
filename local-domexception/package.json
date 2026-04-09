@@ -1,0 +1,7 @@
+{
+  "name": "node-domexception",
+  "version": "1.0.0",
+  "main": "index.js",
+  "description": "Mock for node-domexception to fix deprecation warning",
+  "license": "MIT"
+}

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { Mic, MicOff, Loader2, AlertCircle, Flag, CheckCircle2, StopCircle } from 'lucide-react';
+import { useAppStore } from '../store';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -20,11 +21,10 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function LiveVoice() {
+  const { liveVoiceVoice: voice, setLiveVoiceVoice: setVoice, liveVoiceTranscript: transcript, setLiveVoiceTranscript: setTranscript } = useAppStore();
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<{ role: 'user' | 'model', text: string }[]>([]);
-  const [voice, setVoice] = useState('Zephyr');
 
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -40,8 +40,8 @@ export function LiveVoice() {
     setTranscript([]);
 
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("API Key is missing.");
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
 
       const ai = new GoogleGenAI({ apiKey });
 
@@ -147,7 +147,14 @@ export function LiveVoice() {
 
     } catch (err: any) {
       console.error("Live API setup error:", err);
-      setError(err.message || "Failed to connect to Live API.");
+      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
+      const errorMessage = errorString.toLowerCase();
+      
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          setError("You have exceeded your API quota or spending cap, or your API key is invalid. Please check your GEMINI_API_KEY.");
+      } else {
+          setError(err.message || "Failed to connect to Live API.");
+      }
       setIsConnecting(false);
       disconnectLive();
     }

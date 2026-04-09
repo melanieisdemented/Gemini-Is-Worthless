@@ -1,7 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { Loader2, Upload, FileVideo, Image as ImageIcon, Search, Flag, CheckCircle2 } from 'lucide-react';
 import Markdown from 'react-markdown';
+import { useAppStore } from '../store';
+import { saveFile, getFile, deleteFile } from '../lib/db';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -21,13 +23,29 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function Analyzer() {
+  const { analyzerPrompt: prompt, setAnalyzerPrompt: setPrompt } = useAppStore();
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState('');
+  const [fileData, setFileData] = useState<{ data: string; mimeType: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const loadData = async () => {
+      const f = await getFile('analyzerFile');
+      if (f) {
+        setFileData({ data: f.data, mimeType: f.mimeType });
+        setPreviewUrl(`data:${f.mimeType};base64,${f.data}`);
+      }
+      const r = await getFile('analyzerResult');
+      if (r) {
+        setResult(r.data); // We store the text result in data
+      }
+    };
+    loadData();
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -36,11 +54,20 @@ export function Analyzer() {
       setPreviewUrl(URL.createObjectURL(selectedFile));
       setResult(null);
       setError(null);
+      
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64String = (reader.result as string).split(',')[1];
+        setFileData({ data: base64String, mimeType: selectedFile.type });
+        await saveFile('analyzerFile', base64String, selectedFile.type);
+        await deleteFile('analyzerResult');
+      };
+      reader.readAsDataURL(selectedFile);
     }
   };
 
   const handleAnalyze = async () => {
-    if (!file) {
+    if (!fileData) {
       setError("Please upload a file first.");
       return;
     }
@@ -50,24 +77,14 @@ export function Analyzer() {
     setResult(null);
 
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("API Key is missing.");
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
 
       const ai = new GoogleGenAI({ apiKey });
       
-      // Convert file to base64
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve, reject) => {
-        reader.onload = () => {
-          const base64String = (reader.result as string).split(',')[1];
-          resolve(base64String);
-        };
-        reader.onerror = reject;
-      });
-      reader.readAsDataURL(file);
-      const base64Data = await base64Promise;
+      const base64Data = fileData.data;
 
-      const defaultPrompt = file.type.startsWith('video/') 
+      const defaultPrompt = fileData.mimeType.startsWith('video/') 
         ? "Analyze this video and describe the key events, subjects, and any important information."
         : "Analyze this image in detail. Describe the subjects, setting, lighting, and any text or notable elements.";
 
@@ -80,7 +97,7 @@ export function Analyzer() {
             {
               inlineData: {
                 data: base64Data,
-                mimeType: file.type
+                mimeType: fileData.mimeType
               }
             },
             { text: finalPrompt }
@@ -90,16 +107,14 @@ export function Analyzer() {
 
       const responseText = response.text || "No analysis generated.";
       setResult(responseText);
+      await saveFile('analyzerResult', responseText, 'text/plain');
     } catch (err: any) {
       console.error("Analysis error:", err);
       const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
       const errorMessage = errorString.toLowerCase();
       
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          setError("You have exceeded your API quota or spending cap. Please check your GEMINI_API_KEY.");
       } else {
           setError(err.message || "Failed to analyze the file.");
       }

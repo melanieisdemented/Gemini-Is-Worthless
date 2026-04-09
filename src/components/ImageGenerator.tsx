@@ -1,6 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { Loader2, Image as ImageIcon, Download, Sparkles, Settings2, Upload, X, Search, Flag, CheckCircle2 } from 'lucide-react';
+import { useAppStore } from '../store';
+import { saveFile, getFile, deleteFile } from '../lib/db';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -20,38 +22,63 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function ImageGenerator() {
+  const {
+    imagePrompt: prompt, setImagePrompt: setPrompt,
+    imageNegativePrompt: negativePrompt, setImageNegativePrompt: setNegativePrompt,
+    imageAspectRatio: aspectRatio, setImageAspectRatio: setAspectRatio,
+    imageControlMode: controlMode, setImageControlMode: setControlMode,
+    imageLightingCondition: lightingCondition, setImageLightingCondition: setLightingCondition,
+    imageStylePreset: stylePreset, setImageStylePreset: setStylePreset
+  } = useAppStore();
+
   const [activeTab, setActiveTab] = useState<'txt2img' | 'img2img'>('txt2img');
-  const [prompt, setPrompt] = useState('');
-  const [aspectRatio, setAspectRatio] = useState('1:1');
-  const [imageSize, setImageSize] = useState('1K');
-  const [usePro, setUsePro] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<{ data: string; mimeType: string; url: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [controlMode, setControlMode] = useState('standard');
-  const [lightingCondition, setLightingCondition] = useState('Cinematic studio lighting, warm directional sunlight, neon rim lights');
-  const [negativePrompt, setNegativePrompt] = useState('');
-  const [stylePreset, setStylePreset] = useState('none');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const loadImages = async () => {
+      const ref = await getFile('imageGeneratorReferenceImage');
+      if (ref) {
+        setReferenceImage({
+          data: ref.data,
+          mimeType: ref.mimeType,
+          url: `data:${ref.mimeType};base64,${ref.data}`
+        });
+      }
+      const gen = await getFile('imageGeneratorGeneratedImage');
+      if (gen) {
+        setGeneratedImage(`data:${gen.mimeType};base64,${gen.data}`);
+      }
+    };
+    loadImages();
+  }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     
     const reader = new FileReader();
-    reader.onloadend = () => {
+    reader.onloadend = async () => {
       const base64String = (reader.result as string).split(',')[1];
       setReferenceImage({
         data: base64String,
         mimeType: file.type,
         url: URL.createObjectURL(file)
       });
+      await saveFile('imageGeneratorReferenceImage', base64String, file.type);
     };
     reader.readAsDataURL(file);
     e.target.value = '';
+  };
+
+  const clearReferenceImage = async () => {
+    setReferenceImage(null);
+    await deleteFile('imageGeneratorReferenceImage');
   };
 
   const handleAnalyze = async () => {
@@ -59,11 +86,11 @@ export function ImageGenerator() {
     setIsAnalyzing(true);
     setError(null);
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error("API Key is missing.");
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
+        model: 'gemini-3-flash-preview',
         contents: {
           parts: [
             { inlineData: { data: referenceImage.data, mimeType: referenceImage.mimeType } },
@@ -74,17 +101,7 @@ export function ImageGenerator() {
       setPrompt(prev => prev ? `${prev}, ${response.text}` : response.text || "");
     } catch (err: any) {
       console.error("Analysis error:", err);
-      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
-      const errorMessage = errorString.toLowerCase();
-      
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
-      } else {
-          setError(err.message || "Failed to analyze the image.");
-      }
+      setError(err.message || "Failed to analyze the image.");
     } finally {
       setIsAnalyzing(false);
     }
@@ -101,20 +118,13 @@ export function ImageGenerator() {
     setGeneratedImage(null);
 
     try {
-      // Check for user-selected API key if using Pro model or Flash Image Preview
-      if (window.aistudio?.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-           await window.aistudio.openSelectKey();
-           // Assume success after opening
-        }
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("API Key is missing.");
       }
 
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("API Key is missing.");
-
       const ai = new GoogleGenAI({ apiKey });
-      const modelName = usePro ? 'gemini-3-pro-image-preview' : 'gemini-3.1-flash-image-preview';
+      const modelName = 'gemini-2.5-flash-image';
 
       let finalPrompt = prompt;
       
@@ -159,8 +169,7 @@ export function ImageGenerator() {
         },
         config: {
           imageConfig: {
-            aspectRatio: aspectRatio,
-            imageSize: imageSize
+            aspectRatio: aspectRatio
           }
         }
       });
@@ -169,8 +178,11 @@ export function ImageGenerator() {
       if (response.candidates?.[0]?.content?.parts) {
         for (const part of response.candidates[0].content.parts) {
           if (part.inlineData) {
-            const imageUrl = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+            const mimeType = part.inlineData.mimeType || 'image/png';
+            const data = part.inlineData.data;
+            const imageUrl = `data:${mimeType};base64,${data}`;
             setGeneratedImage(imageUrl);
+            await saveFile('imageGeneratorGeneratedImage', data, mimeType);
             foundImage = true;
             break;
           }
@@ -186,11 +198,12 @@ export function ImageGenerator() {
       const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
       const errorMessage = errorString.toLowerCase();
       
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
+      if (errorMessage.includes("requested entity was not found")) {
+          setError("API key session expired or invalid. Please check your GEMINI_API_KEY.");
+      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          setError("You have exceeded your API quota or spending cap, or your API key does not have permission for this model. Please check your GEMINI_API_KEY.");
+      } else if (errorMessage.includes("safety") || errorMessage.includes("policy") || errorMessage.includes("blocked")) {
+          setError("The generated content was blocked by safety filters. Please try modifying your prompt or base image.");
       } else {
           setError(err.message || "Failed to generate image.");
       }
@@ -396,24 +409,6 @@ export function ImageGenerator() {
             <div className="grid grid-cols-2 gap-6">
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-white/60">Model Checkpoint</label>
-                  <div className="flex gap-1 bg-black/40 p-1 rounded-lg border border-white/10">
-                    <button
-                      onClick={() => setUsePro(false)}
-                      className={`flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors ${!usePro ? 'bg-white/20 text-white shadow-sm' : 'text-white/50 hover:text-white/80'}`}
-                    >
-                      Flash (Fast)
-                    </button>
-                    <button
-                      onClick={() => setUsePro(true)}
-                      className={`flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors ${usePro ? 'bg-white/20 text-white shadow-sm' : 'text-white/50 hover:text-white/80'}`}
-                    >
-                      Pro (HQ)
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
                   <label className="text-xs font-medium text-white/60">Style Preset</label>
                   <select
                     value={stylePreset}
@@ -444,19 +439,6 @@ export function ImageGenerator() {
                     <option value="3:4">3:4 (Portrait)</option>
                     <option value="16:9">16:9 (Widescreen)</option>
                     <option value="9:16">9:16 (Vertical)</option>
-                  </select>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-white/60">Resolution (Highres. fix)</label>
-                  <select
-                    value={imageSize}
-                    onChange={(e) => setImageSize(e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
-                  >
-                    <option value="1K">1K (Standard)</option>
-                    <option value="2K">2K (High)</option>
-                    <option value="4K">4K (Ultra)</option>
                   </select>
                 </div>
               </div>
@@ -513,8 +495,7 @@ export function ImageGenerator() {
                 <p><span className="text-white/40">Prompt:</span> {prompt}</p>
                 {negativePrompt && <p><span className="text-white/40">Negative prompt:</span> {negativePrompt}</p>}
                 <p className="mt-2 text-white/40">
-                  Model: {usePro ? 'gemini-3-pro-image-preview' : 'gemini-3.1-flash-image-preview'}, 
-                  Size: {imageSize}, 
+                  Model: gemini-2.5-flash-image, 
                   Aspect Ratio: {aspectRatio}
                   {stylePreset !== 'none' ? `, Style: ${stylePreset}` : ''}
                 </p>

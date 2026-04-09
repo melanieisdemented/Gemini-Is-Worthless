@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, VideoGenerationReferenceType } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { pipeline, env } from '@huggingface/transformers';
 import { Upload, Video, Loader2, Key, AlertCircle, X, Wand2, Camera, Image as ImageIcon, Settings, Download, ArrowDown, ArrowUp, ArrowRight, Maximize, ZoomIn, Users, RotateCcw, PenTool, MessageSquare, Search, Flag, CheckCircle2, Mic, Film } from 'lucide-react';
 
@@ -11,6 +11,7 @@ import { ImageGenerator } from './components/ImageGenerator';
 import { Analyzer } from './components/Analyzer';
 import { AudioGenerator } from './components/AudioGenerator';
 import { VideoToImageStudio } from './components/VideoToImageStudio';
+import { VideoGenerator } from './components/VideoGenerator';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -31,10 +32,7 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 
 declare global {
   interface Window {
-    aistudio?: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
+    aistudio?: any;
   }
 }
 
@@ -110,41 +108,27 @@ function FrameUploader({ label, frame, onUpload, onClear, onAnalyze, isAnalyzing
   );
 }
 
+import { useAppStore } from './store';
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'studio' | 'video' | 'angles' | 'depth' | 'chat' | 'image' | 'analyze' | 'audio'>('studio');
-  const [firstFrame, setFirstFrame] = useState<FrameData | null>(null);
-  const [lastFrame, setLastFrame] = useState<FrameData | null>(null);
-  const [prompt, setPrompt] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
+  const { activeTab, setActiveTab, anglePrompt, setAnglePrompt } = useAppStore();
   const [loadingMessage, setLoadingMessage] = useState('Initializing...');
-  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
-  const [generatedVideoObj, setGeneratedVideoObj] = useState<any>(null);
-  const [isExtending, setIsExtending] = useState(false);
-  const [cameraMotion, setCameraMotion] = useState('None');
   
-  const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
-  const [frameRate, setFrameRate] = useState('30');
-  const [targetDuration, setTargetDuration] = useState('5');
-  const [useAdvancedInterpolation, setUseAdvancedInterpolation] = useState(false);
-  const [referenceImages, setReferenceImages] = useState<FrameData[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
   const [baseImage, setBaseImage] = useState<FrameData | null>(null);
   const [selectedAngle, setSelectedAngle] = useState("Bird's-eye view (Top down)");
   const [customAngle, setCustomAngle] = useState('');
-  const [anglePrompt, setAnglePrompt] = useState('');
-  const [angleImageSize, setAngleImageSize] = useState<'1K' | '2K' | '4K'>('1K');
-  const [angleAspectRatio, setAngleAspectRatio] = useState('16:9');
   const [generatedAngleUrl, setGeneratedAngleUrl] = useState<string | null>(null);
   const [isGeneratingAngle, setIsGeneratingAngle] = useState(false);
+  const [angleImageSize, setAngleImageSize] = useState('1K');
+  const [angleAspectRatio, setAngleAspectRatio] = useState('16:9');
 
   const [depthImage, setDepthImage] = useState<FrameData | null>(null);
   const [generatedDepthUrl, setGeneratedDepthUrl] = useState<string | null>(null);
   const [isGeneratingDepth, setIsGeneratingDepth] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
-  const [hasApiKey, setHasApiKey] = useState<boolean>(true);
   const [analyzingFrame, setAnalyzingFrame] = useState<'firstFrame' | 'lastFrame' | 'baseImage' | 'depthImage' | null>(null);
 
   const PRESET_ANGLES = [
@@ -159,25 +143,10 @@ export default function App() {
   ];
 
   useEffect(() => {
-    const checkApiKey = async () => {
-      if (window.aistudio?.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(hasKey);
-      }
-    };
-    checkApiKey();
-  }, []);
-
-  const handleSelectApiKey = async () => {
-    if (window.aistudio?.openSelectKey) {
-      try {
-        await window.aistudio.openSelectKey();
-        setHasApiKey(true);
-      } catch (e) {
-        console.error("Failed to select API key", e);
-      }
+    if (!process.env.GEMINI_API_KEY) {
+      setError("GEMINI_API_KEY is not set. Please configure it in your environment.");
     }
-  };
+  }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, setFrame: (frame: FrameData | null) => void) => {
     const file = e.target.files?.[0];
@@ -196,10 +165,8 @@ export default function App() {
     e.target.value = '';
   };
 
-  const handleAnalyzeFrame = async (frameType: 'firstFrame' | 'lastFrame' | 'baseImage' | 'depthImage') => {
+  const handleAnalyzeFrame = async (frameType: 'baseImage' | 'depthImage') => {
     let frameToAnalyze = null;
-    if (frameType === 'firstFrame') frameToAnalyze = firstFrame;
-    if (frameType === 'lastFrame') frameToAnalyze = lastFrame;
     if (frameType === 'baseImage') frameToAnalyze = baseImage;
     if (frameType === 'depthImage') frameToAnalyze = depthImage;
 
@@ -209,13 +176,13 @@ export default function App() {
     setError(null);
 
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("API Key is missing.");
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
 
       const ai = new GoogleGenAI({ apiKey });
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
+        model: 'gemini-3-flash-preview',
         contents: {
           parts: [
             {
@@ -231,15 +198,9 @@ export default function App() {
 
       const analysisText = response.text || "";
       
-      if (frameType === 'firstFrame' || frameType === 'lastFrame') {
-        setPrompt(prev => prev ? `${prev}\n\n${analysisText}` : analysisText);
-      } else if (frameType === 'baseImage') {
+      if (frameType === 'baseImage') {
         setAnglePrompt(prev => prev ? `${prev}\n\n${analysisText}` : analysisText);
       } else if (frameType === 'depthImage') {
-        // We don't have a prompt field for depth, but maybe we can just show a toast or alert, or maybe we don't need it.
-        // Actually, depth estimation doesn't use a prompt. Let's just log it or maybe we shouldn't have added it to depth.
-        // The user said "the analysis feature was brilliant and thoughtful for once but it has to be immediately interlinked and intertwined to basically every other function, or else you forget."
-        // Let's add a prompt field to depth as well, just in case it's needed for future depth features, or just to show the analysis.
         console.log("Depth Image Analysis:", analysisText);
       }
     } catch (err: any) {
@@ -247,113 +208,13 @@ export default function App() {
       const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
       const errorMessage = errorString.toLowerCase();
       
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          setError("You have exceeded your API quota or spending cap. Please check your GEMINI_API_KEY.");
       } else {
           setError(err.message || "Failed to analyze the image.");
       }
     } finally {
       setAnalyzingFrame(null);
-    }
-  };
-
-  const handleSaveFrame = () => {
-    if (!videoRef.current) return;
-    
-    const video = videoRef.current;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    const dataUrl = canvas.toDataURL('image/png');
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = `frame-${video.currentTime.toFixed(2)}s.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
-
-  const handleExtendVideo = async () => {
-    if (!generatedVideoObj) return;
-
-    setIsExtending(true);
-    setError(null);
-    setLoadingMessage("Extending video by 7 seconds...");
-
-    try {
-      if (window.aistudio?.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-           setHasApiKey(false);
-           throw new Error("API key not selected.");
-        }
-      }
-
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      const ai = new GoogleGenAI({ apiKey });
-
-      let operation = await ai.models.generateVideos({
-        model: 'veo-3.1-generate-preview',
-        prompt: prompt || 'Continue the scene smoothly',
-        video: generatedVideoObj,
-        config: {
-          numberOfVideos: 1,
-          resolution: '720p',
-          aspectRatio: '16:9'
-        }
-      });
-
-      const interval = setInterval(() => {
-        setLoadingMessage("Still extending video...");
-      }, 15000);
-
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        operation = await ai.operations.getVideosOperation({operation: operation});
-      }
-
-      clearInterval(interval);
-
-      if (operation.error) {
-        throw new Error((operation.error as any).message || "Failed to extend video");
-      }
-
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      
-      if (!downloadLink) {
-        throw new Error("No video URI returned after extension.");
-      }
-
-      const response = await fetch(downloadLink, {
-        method: 'GET',
-        headers: {
-          'x-goog-api-key': apiKey || '',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to download extended video");
-      }
-
-      const blob = await response.blob();
-      const videoUrl = URL.createObjectURL(blob);
-      setGeneratedVideoUrl(videoUrl);
-      setGeneratedVideoObj(operation.response?.generatedVideos?.[0]?.video);
-
-    } catch (err: any) {
-      console.error("Video extension error:", err);
-      setError(err.message || "An unexpected error occurred during video extension.");
-    } finally {
-      setIsExtending(false);
     }
   };
 
@@ -368,14 +229,10 @@ export default function App() {
     setGeneratedAngleUrl(null);
 
     try {
-      if (window.aistudio?.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-           await window.aistudio.openSelectKey();
-        }
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is not set.");
       }
-
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
       const ai = new GoogleGenAI({ apiKey });
 
       const angleToUse = selectedAngle === 'Custom...' ? customAngle : selectedAngle;
@@ -395,7 +252,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       }
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image-preview',
+        model: 'gemini-2.5-flash-image',
         contents: {
           parts: [
             {
@@ -412,7 +269,6 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
         config: {
           imageConfig: {
             aspectRatio: angleAspectRatio,
-            imageSize: angleImageSize
           }
         }
       });
@@ -449,13 +305,9 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
       const errorMessage = errorString.toLowerCase();
       
       if (errorMessage.includes("requested entity was not found")) {
-          setHasApiKey(false);
-          setError("API key session expired or invalid. Please select your API key again.");
-      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
+          setError("API key session expired or invalid. Please check your GEMINI_API_KEY.");
+      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          setError("You have exceeded your API quota or spending cap. Please check your GEMINI_API_KEY.");
       } else if (errorMessage.includes("safety") || errorMessage.includes("policy") || errorMessage.includes("blocked")) {
           setError("The generated content was blocked by safety filters. Please try modifying your prompt or base image.");
       } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
@@ -551,235 +403,6 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
     }
   };
 
-  const handleGenerate = async () => {
-    if (!firstFrame && !prompt.trim()) {
-      setError("Please provide at least a first frame or a text prompt.");
-      return;
-    }
-
-    setIsGenerating(true);
-    setError(null);
-    setGeneratedVideoUrl(null);
-    setGeneratedVideoObj(null);
-    setLoadingMessage("Starting video generation...");
-
-    try {
-      if (window.aistudio?.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-           setHasApiKey(false);
-           throw new Error("API key not selected.");
-        }
-      }
-
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      const ai = new GoogleGenAI({ apiKey });
-
-      let safePrompt = prompt || (lastFrame ? 'A smooth transition between the two frames' : 'A cinematic video of this scene');
-      safePrompt = `${safePrompt}. Video should be ${targetDuration} seconds long at ${frameRate} frames per second.`;
-      
-      if (cameraMotion !== 'None') {
-        safePrompt += ` Camera motion: ${cameraMotion}.`;
-      }
-      
-      if (useAdvancedInterpolation) {
-        safePrompt += ` CRITICAL INSTRUCTION: Act as an advanced frame interpolation algorithm. Ensure the transition between the first and last frame is exceptionally smooth, physically realistic, and free of artifacts. Maintain perfect temporal consistency and fluid motion dynamics.`;
-      }
-
-      // Sanitize prompt to avoid the "photorealistic children" filter if the user typed it
-      safePrompt = safePrompt.replace(/\b(child|children|kid|kids|boy|boys|girl|girls|toddler|toddlers|baby|babies|minor|minors|teen|teenager|youth)\b/gi, "young adult");
-
-      const referenceImagesPayload: any[] = [];
-      if (referenceImages.length > 0) {
-        for (const img of referenceImages) {
-          if (img) {
-            referenceImagesPayload.push({
-              image: {
-                imageBytes: img.data,
-                mimeType: img.mimeType,
-              },
-              referenceType: VideoGenerationReferenceType.ASSET,
-            });
-          }
-        }
-      }
-
-      const isProModel = useAdvancedInterpolation || referenceImagesPayload.length > 0 || targetDuration !== '5';
-
-      let operation = await ai.models.generateVideos({
-        model: isProModel ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview',
-        prompt: safePrompt,
-        ...(firstFrame ? {
-          image: {
-            imageBytes: firstFrame.data,
-            mimeType: firstFrame.mimeType,
-          }
-        } : {}),
-        config: {
-          numberOfVideos: 1,
-          resolution: isProModel ? '720p' : resolution,
-          ...(lastFrame ? {
-            lastFrame: {
-              imageBytes: lastFrame.data,
-              mimeType: lastFrame.mimeType,
-            }
-          } : {}),
-          ...(referenceImagesPayload.length > 0 ? {
-            referenceImages: referenceImagesPayload
-          } : {}),
-          aspectRatio: '16:9'
-        }
-      });
-
-      const loadingMessages = [
-        "Analyzing frames...",
-        "Setting up the scene...",
-        "Generating intermediate frames...",
-        "Adding motion and details...",
-        "Refining the video...",
-        "Almost there..."
-      ];
-      let msgIndex = 0;
-      
-      const interval = setInterval(() => {
-        setLoadingMessage(loadingMessages[msgIndex % loadingMessages.length]);
-        msgIndex++;
-      }, 15000);
-
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        operation = await ai.operations.getVideosOperation({operation: operation});
-      }
-
-      if (operation.error) {
-        clearInterval(interval);
-        throw new Error((operation.error as any).message || "Failed to generate video");
-      }
-
-      let currentVideoObj = operation.response?.generatedVideos?.[0]?.video;
-      
-      // Handle automatic extensions if target duration is > 5s
-      const extensionsNeeded = targetDuration === '19' ? 2 : (targetDuration === '12' ? 1 : 0);
-      
-      for (let i = 0; i < extensionsNeeded; i++) {
-        setLoadingMessage(`Extending video (Part ${i + 2} of ${extensionsNeeded + 1})...`);
-        
-        let extOperation = await ai.models.generateVideos({
-          model: 'veo-3.1-generate-preview',
-          prompt: safePrompt || 'Continue the scene smoothly',
-          video: currentVideoObj,
-          config: {
-            numberOfVideos: 1,
-            resolution: '720p',
-            aspectRatio: '16:9'
-          }
-        });
-
-        while (!extOperation.done) {
-          await new Promise(resolve => setTimeout(resolve, 10000));
-          extOperation = await ai.operations.getVideosOperation({operation: extOperation});
-        }
-
-        if (extOperation.error) {
-          console.error("Extension failed, using video generated so far.", extOperation.error);
-          break; // Stop extending but keep the video we have so far
-        }
-        
-        if (extOperation.response?.generatedVideos?.[0]?.video) {
-          currentVideoObj = extOperation.response.generatedVideos[0].video;
-        }
-      }
-
-      clearInterval(interval);
-
-      const downloadLink = currentVideoObj?.uri;
-      
-      if (!downloadLink) {
-        console.error("Full operation result:", operation);
-        
-        let errorDetail = "No video URI returned.";
-        
-        if (operation.response?.raiMediaFilteredReasons && operation.response.raiMediaFilteredReasons.length > 0) {
-          errorDetail = operation.response.raiMediaFilteredReasons.join(" ");
-        } else {
-           const responseJson = JSON.stringify(operation.response || operation, null, 2);
-           if (responseJson.length < 500) {
-             errorDetail += ` API Response: ${responseJson}`;
-           }
-        }
-        
-        throw new Error(errorDetail);
-      }
-
-      const response = await fetch(downloadLink, {
-        method: 'GET',
-        headers: {
-          'x-goog-api-key': apiKey || '',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to download video");
-      }
-
-      const blob = await response.blob();
-      const videoUrl = URL.createObjectURL(blob);
-      setGeneratedVideoUrl(videoUrl);
-      setGeneratedVideoObj(currentVideoObj);
-
-    } catch (err: any) {
-      console.error("Video generation error:", err);
-      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
-      const errorMessage = errorString.toLowerCase();
-      
-      if (errorMessage.includes("requested entity was not found")) {
-          setHasApiKey(false);
-          setError("API key session expired or invalid. Please select your API key again.");
-      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          setError("You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
-      } else if (errorMessage.includes("safety") || errorMessage.includes("policy") || errorMessage.includes("blocked")) {
-          setError("The generated video was blocked by safety filters. Please try modifying your prompt or input images.");
-      } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
-          setError("A network error occurred. Please check your internet connection and try again.");
-      } else if (errorMessage.includes("timeout")) {
-          setError("The request timed out. Video generation can take several minutes, please try again.");
-      } else {
-          setError(err.message || "An unexpected error occurred during video generation. Please try again.");
-      }
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  if (!hasApiKey) {
-    return (
-      <div className="min-h-screen bg-[#0a0502] flex items-center justify-center p-4 font-sans text-white">
-        <div className="max-w-md w-full bg-white/5 border border-white/10 p-8 rounded-3xl backdrop-blur-xl text-center">
-          <div className="w-16 h-16 bg-white/10 rounded-full flex items-center justify-center mx-auto mb-6">
-            <Key className="w-8 h-8 text-white/80" />
-          </div>
-          <h2 className="text-2xl font-light mb-4">API Key Required</h2>
-          <p className="text-white/60 mb-8 text-sm leading-relaxed">
-            To generate videos using the Veo model, you need to select a paid Google Cloud API key. 
-            <br/><br/>
-            <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
-              Learn more about billing
-            </a>
-          </p>
-          <button 
-            onClick={handleSelectApiKey}
-            className="w-full py-3 px-6 bg-white text-black rounded-full font-medium hover:bg-white/90 transition-colors"
-          >
-            Select API Key
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-[#0a0502] text-white font-sans selection:bg-white/20">
       <div className="fixed inset-0 pointer-events-none">
@@ -810,7 +433,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
             className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'video' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
           >
             <Video className="w-4 h-4" />
-            Video Transition
+            Image2Video
           </button>
           <button 
             onClick={() => { setActiveTab('angles'); setError(null); }}
@@ -864,247 +487,7 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
 
         {activeTab === 'video' && (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="grid md:grid-cols-2 gap-8">
-              <FrameUploader 
-                label="First Frame" 
-                frame={firstFrame} 
-                onUpload={(e) => handleFileUpload(e, setFirstFrame)} 
-                onClear={() => setFirstFrame(null)}
-                onAnalyze={() => handleAnalyzeFrame('firstFrame')}
-                isAnalyzing={analyzingFrame === 'firstFrame'}
-              />
-              <FrameUploader 
-                label="Last Frame" 
-                frame={lastFrame} 
-                onUpload={(e) => handleFileUpload(e, setLastFrame)} 
-                onClear={() => setLastFrame(null)}
-                onAnalyze={() => handleAnalyzeFrame('lastFrame')}
-                isAnalyzing={analyzingFrame === 'lastFrame'}
-              />
-            </div>
-
-            <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
-              <div className="flex items-center gap-2 mb-2">
-                <h3 className="text-sm font-medium text-white/70 uppercase tracking-wider">Reference Images (Identity Preservation)</h3>
-                <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full">Max 3</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {[0, 1, 2].map((index) => (
-                  <FrameUploader
-                    key={index}
-                    label={`Reference ${index + 1}`}
-                    frame={referenceImages[index] || null}
-                    onUpload={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        const reader = new FileReader();
-                        reader.onloadend = () => {
-                          const base64String = reader.result as string;
-                          const base64Data = base64String.split(',')[1];
-                          const newRefImages = [...referenceImages];
-                          newRefImages[index] = {
-                            data: base64Data,
-                            mimeType: file.type,
-                            url: URL.createObjectURL(file)
-                          };
-                          setReferenceImages(newRefImages);
-                        };
-                        reader.readAsDataURL(file);
-                      }
-                    }}
-                    onClear={() => {
-                      const newRefImages = [...referenceImages];
-                      newRefImages.splice(index, 1);
-                      setReferenceImages(newRefImages);
-                    }}
-                    onAnalyze={() => {}}
-                    isAnalyzing={false}
-                  />
-                ))}
-              </div>
-              <p className="text-xs text-white/40 text-center">Reference images are used to preserve identity and style across the generated video.</p>
-            </div>
-
-            <div className="space-y-4 max-w-2xl mx-auto w-full">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-white/70 uppercase tracking-wider">Prompt (Optional)</label>
-                <textarea 
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Describe what happens between the frames..."
-                  className="w-full bg-white/5 border border-white/10 rounded-xl p-4 text-white placeholder:text-white/30 focus:outline-none focus:border-white/30 focus:ring-1 focus:ring-white/30 transition-all resize-none h-24"
-                />
-              </div>
-
-              <div className="flex flex-col gap-4">
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Resolution</label>
-                    <select
-                      value={resolution}
-                      onChange={(e) => setResolution(e.target.value as '720p' | '1080p')}
-                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                    >
-                      <option value="720p">720p</option>
-                      <option value="1080p">1080p</option>
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Frame Rate</label>
-                    <select
-                      value={frameRate}
-                      onChange={(e) => setFrameRate(e.target.value)}
-                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                    >
-                      <option value="24">24 fps</option>
-                      <option value="30">30 fps</option>
-                      <option value="60">60 fps</option>
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Duration</label>
-                    <select
-                      value={targetDuration}
-                      onChange={(e) => setTargetDuration(e.target.value)}
-                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                    >
-                      <option value="5">5 seconds (Base)</option>
-                      <option value="12">12 seconds (Extended)</option>
-                      <option value="19">19 seconds (Double Extended)</option>
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-white/70 uppercase tracking-wider">Camera Motion</label>
-                    <select
-                      value={cameraMotion}
-                      onChange={(e) => setCameraMotion(e.target.value)}
-                      className="w-full bg-black/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-white/30"
-                    >
-                      <option value="None">None</option>
-                      <option value="Pan Left">Pan Left</option>
-                      <option value="Pan Right">Pan Right</option>
-                      <option value="Pan Up">Pan Up</option>
-                      <option value="Pan Down">Pan Down</option>
-                      <option value="Zoom In">Zoom In</option>
-                      <option value="Zoom Out">Zoom Out</option>
-                    </select>
-                  </div>
-                  <div className="sm:col-span-4 pt-2 border-t border-white/10">
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                      <div className="relative flex items-center">
-                        <input 
-                          type="checkbox" 
-                          checked={useAdvancedInterpolation || referenceImages.some(img => img !== null) || targetDuration !== '5'}
-                          disabled={referenceImages.some(img => img !== null) || targetDuration !== '5'}
-                          onChange={(e) => setUseAdvancedInterpolation(e.target.checked)}
-                          className="sr-only" 
-                        />
-                        <div className={`w-10 h-5 rounded-full transition-colors ${(useAdvancedInterpolation || referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'bg-blue-500' : 'bg-white/20'} ${(referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'opacity-50' : ''}`}></div>
-                        <div className={`absolute left-1 top-1 w-3 h-3 bg-white rounded-full transition-transform ${(useAdvancedInterpolation || referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'translate-x-5' : 'translate-x-0'}`}></div>
-                      </div>
-                      <div>
-                        <p className={`text-sm font-medium transition-colors ${(referenceImages.some(img => img !== null) || targetDuration !== '5') ? 'text-blue-400' : 'text-white group-hover:text-blue-400'}`}>
-                          Advanced Frame Interpolation {(referenceImages.some(img => img !== null) || targetDuration !== '5') && '(Enabled by Pro Features)'}
-                        </p>
-                        <p className="text-xs text-white/50">Enhance smoothness and realism of generated video transitions.</p>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {error && (
-                <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
-                  <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                  <p>{error}</p>
-                  <ReportIssueButton error={error} />
-                </div>
-              )}
-
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || (!firstFrame && !prompt.trim())}
-                className="w-full py-4 bg-white text-black rounded-xl font-medium hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Generating Video...
-                  </>
-                ) : (
-                  <>
-                    <Video className="w-5 h-5" />
-                    Generate Scene
-                  </>
-                )}
-              </button>
-            </div>
-
-            <AnimatePresence mode="wait">
-              {isGenerating && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  className="max-w-2xl mx-auto w-full p-8 bg-white/5 border border-white/10 rounded-2xl text-center space-y-6"
-                >
-                  <div className="relative w-16 h-16 mx-auto">
-                    <div className="absolute inset-0 border-2 border-white/10 rounded-full" />
-                    <div className="absolute inset-0 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  </div>
-                  <div className="space-y-2">
-                    <h3 className="text-lg font-medium">Creating your scene</h3>
-                    <p className="text-white/50 text-sm animate-pulse">{loadingMessage}</p>
-                  </div>
-                  <p className="text-xs text-white/30">This process typically takes a few minutes.</p>
-                </motion.div>
-              )}
-
-              {generatedVideoUrl && !isGenerating && (
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="max-w-4xl mx-auto w-full space-y-4"
-                >
-                  <h2 className="text-xl font-light text-center">Generated Scene</h2>
-                  <div className="relative aspect-video rounded-2xl overflow-hidden border border-white/10 bg-black">
-                    <video 
-                      ref={videoRef}
-                      src={generatedVideoUrl} 
-                      controls 
-                      autoPlay 
-                      loop 
-                      className="w-full h-full object-contain"
-                    />
-                  </div>
-                  <div className="flex justify-center gap-4">
-                    <button 
-                      onClick={handleSaveFrame}
-                      className="flex items-center gap-2 text-sm text-white/50 hover:text-white transition-colors"
-                    >
-                      <Camera className="w-4 h-4" />
-                      Save Current Frame
-                    </button>
-                    <button
-                      onClick={handleExtendVideo}
-                      disabled={isExtending || !generatedVideoObj}
-                      className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isExtending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Video className="w-4 h-4" />}
-                      {isExtending ? "Extending..." : "Extend Video (+7s)"}
-                    </button>
-                    <a 
-                      href={generatedVideoUrl} 
-                      download="generated-scene.mp4"
-                      className="flex items-center gap-2 text-sm text-white/50 hover:text-white transition-colors"
-                    >
-                      <Download className="w-4 h-4" />
-                      Download Video
-                    </a>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <VideoGenerator />
           </div>
         )}
 

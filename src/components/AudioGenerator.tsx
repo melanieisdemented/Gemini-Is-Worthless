@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { Music, Mic, Loader2, AlertCircle, Play, Download, Flag, CheckCircle2, Radio } from 'lucide-react';
 import { LiveVoice } from './LiveVoice';
+import { useAppStore } from '../store';
+import { saveFile, getFile } from '../lib/db';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -21,14 +23,23 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function AudioGenerator() {
-  const [prompt, setPrompt] = useState('');
+  const { audioPrompt: prompt, setAudioPrompt: setPrompt, audioVoice: voice, setAudioVoice: setVoice } = useAppStore();
   const [mode, setMode] = useState<'music' | 'tts' | 'live'>('music');
   const [musicDuration, setMusicDuration] = useState<'clip' | 'pro'>('clip');
-  const [voice, setVoice] = useState('Kore');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState(true);
+
+  useEffect(() => {
+    const loadAudio = async () => {
+      const a = await getFile('audioGeneratorGeneratedAudio');
+      if (a) {
+        setGeneratedAudioUrl(`data:${a.mimeType};base64,${a.data}`);
+      }
+    };
+    loadAudio();
+  }, []);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
@@ -41,15 +52,9 @@ export function AudioGenerator() {
     setGeneratedAudioUrl(null);
 
     try {
-      if (window.aistudio?.hasSelectedApiKey) {
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-          setHasApiKey(false);
-          throw new Error("API key not selected.");
-        }
-      }
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
 
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
       const ai = new GoogleGenAI({ apiKey });
 
       if (mode === 'music') {
@@ -85,6 +90,7 @@ export function AudioGenerator() {
         const blob = new Blob([bytes], { type: mimeType });
         const audioUrl = URL.createObjectURL(blob);
         setGeneratedAudioUrl(audioUrl);
+        await saveFile('audioGeneratorGeneratedAudio', audioBase64, mimeType);
 
       } else if (mode === 'tts') {
         // TTS
@@ -149,11 +155,24 @@ export function AudioGenerator() {
         const blob = new Blob([buffer], { type: 'audio/wav' });
         const audioUrl = URL.createObjectURL(blob);
         setGeneratedAudioUrl(audioUrl);
+        
+        // Convert buffer to base64 for storage
+        const base64AudioData = btoa(
+          new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        );
+        await saveFile('audioGeneratorGeneratedAudio', base64AudioData, 'audio/wav');
       }
 
     } catch (err: any) {
       console.error("Audio generation error:", err);
-      setError(err.message || "An unexpected error occurred during audio generation.");
+      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
+      const errorMessage = errorString.toLowerCase();
+      
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          setError("You have exceeded your API quota or spending cap, or your API key is invalid. Please check your GEMINI_API_KEY.");
+      } else {
+          setError(err.message || "An unexpected error occurred during audio generation.");
+      }
     } finally {
       setIsGenerating(false);
     }

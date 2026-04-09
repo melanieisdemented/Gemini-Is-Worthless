@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, VideoGenerationReferenceType } from '@google/genai';
-import { Upload, Film, Image as ImageIcon, Search, Wand2, Loader2, Play, Pause, Scissors, Download, RefreshCw, Video } from 'lucide-react';
+import { GoogleGenAI } from '@google/genai';
+import { Upload, Film, Image as ImageIcon, Search, Wand2, Loader2, Play, Pause, Scissors, Download, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useAppStore } from '../store';
+import { saveFile, getFile, deleteFile } from '../lib/db';
 
 interface ExtractedFrame {
   id: string;
@@ -13,6 +15,7 @@ interface ExtractedFrame {
 }
 
 export function VideoToImageStudio() {
+  const { videoToImagePrompt: adaptPrompt, setVideoToImagePrompt: setAdaptPrompt } = useAppStore();
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [frames, setFrames] = useState<ExtractedFrame[]>([]);
@@ -23,15 +26,40 @@ export function VideoToImageStudio() {
   const [isAdapting, setIsAdapting] = useState(false);
   
   const [adaptedImageUrl, setAdaptedImageUrl] = useState<string | null>(null);
-  const [adaptedVideoUrl, setAdaptedVideoUrl] = useState<string | null>(null);
-  const [adaptPrompt, setAdaptPrompt] = useState('');
-  const [adaptMode, setAdaptMode] = useState<'image' | 'video'>('image');
   
   const [error, setError] = useState<string | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const loadData = async () => {
+      const v = await getFile('videoToImageVideo');
+      if (v) {
+        setVideoUrl(`data:${v.mimeType};base64,${v.data}`);
+        // We can't easily recreate a File object from base64 synchronously, 
+        // but we can create a blob and set it as videoFile if needed, 
+        // or just rely on videoUrl for playback.
+        const res = await fetch(`data:${v.mimeType};base64,${v.data}`);
+        const blob = await res.blob();
+        setVideoFile(new File([blob], "video.mp4", { type: v.mimeType }));
+      }
+      const f = await getFile('videoToImageFrames');
+      if (f) {
+        setFrames(JSON.parse(f.data));
+      }
+      const s = await getFile('videoToImageSelectedFrame');
+      if (s) {
+        setSelectedFrame(JSON.parse(s.data));
+      }
+      const a = await getFile('videoToImageAdaptedImage');
+      if (a) {
+        setAdaptedImageUrl(`data:${a.mimeType};base64,${a.data}`);
+      }
+    };
+    loadData();
+  }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -41,8 +69,17 @@ export function VideoToImageStudio() {
       setFrames([]);
       setSelectedFrame(null);
       setAdaptedImageUrl(null);
-      setAdaptedVideoUrl(null);
       setError(null);
+      
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64String = (reader.result as string).split(',')[1];
+        await saveFile('videoToImageVideo', base64String, file.type);
+        await deleteFile('videoToImageFrames');
+        await deleteFile('videoToImageSelectedFrame');
+        await deleteFile('videoToImageAdaptedImage');
+      };
+      reader.readAsDataURL(file);
     } else if (file) {
       setError("Please upload a valid video file.");
     }
@@ -106,8 +143,10 @@ export function VideoToImageStudio() {
       }
 
       setFrames(newFrames);
+      await saveFile('videoToImageFrames', JSON.stringify(newFrames), 'application/json');
       if (newFrames.length > 0) {
         setSelectedFrame(newFrames[0]);
+        await saveFile('videoToImageSelectedFrame', JSON.stringify(newFrames[0]), 'application/json');
       }
     } catch (err: any) {
       console.error("Extraction error:", err);
@@ -124,13 +163,13 @@ export function VideoToImageStudio() {
     setError(null);
     
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error("API Key is missing.");
 
       const ai = new GoogleGenAI({ apiKey });
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
+        model: 'gemini-3-flash-preview',
         contents: [
           {
             inlineData: {
@@ -146,8 +185,11 @@ export function VideoToImageStudio() {
         f.id === frame.id ? { ...f, analysis: response.text } : f
       );
       setFrames(updatedFrames);
+      await saveFile('videoToImageFrames', JSON.stringify(updatedFrames), 'application/json');
       if (selectedFrame?.id === frame.id) {
-        setSelectedFrame({ ...frame, analysis: response.text });
+        const updatedSelected = { ...frame, analysis: response.text };
+        setSelectedFrame(updatedSelected);
+        await saveFile('videoToImageSelectedFrame', JSON.stringify(updatedSelected), 'application/json');
       }
       
       // Auto-fill adapt prompt based on analysis
@@ -171,104 +213,55 @@ export function VideoToImageStudio() {
     setIsAdapting(true);
     setError(null);
     setAdaptedImageUrl(null);
-    setAdaptedVideoUrl(null);
     
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
-        if (window.aistudio?.openSelectKey) {
-          await window.aistudio.openSelectKey();
-          return adaptFrame(); // Retry after key selection
-        }
         throw new Error("API Key is missing.");
       }
 
       const ai = new GoogleGenAI({ apiKey });
 
-      if (adaptMode === 'image') {
-        // Image-to-Image using Gemini Image
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-image-preview',
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  data: selectedFrame.base64,
-                  mimeType: selectedFrame.mimeType
-                }
-              },
-              { text: adaptPrompt || "Enhance and stylize this image, high quality, cinematic lighting." }
-            ]
-          },
-          config: {
-            imageConfig: {
-              aspectRatio: "16:9",
-              imageSize: "1K"
-            }
-          }
-        });
-
-        let foundImage = false;
-        if (response.candidates?.[0]?.content?.parts) {
-          for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData) {
-              const imageUrl = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-              setAdaptedImageUrl(imageUrl);
-              foundImage = true;
-              break;
-            }
+      // Image-to-Image using Gemini Image
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: selectedFrame.base64,
+                mimeType: selectedFrame.mimeType
+              }
+            },
+            { text: adaptPrompt || "Enhance and stylize this image, high quality, cinematic lighting." }
+          ]
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: "16:9"
           }
         }
-        if (!foundImage) throw new Error("No image was returned by the model.");
+      });
 
-      } else {
-        // Image-to-Video using Veo
-        let operation = await ai.models.generateVideos({
-          model: 'veo-3.1-fast-generate-preview',
-          prompt: adaptPrompt || "Cinematic motion, slow pan, high quality.",
-          image: {
-            imageBytes: selectedFrame.base64,
-            mimeType: selectedFrame.mimeType
-          },
-          config: {
-            numberOfVideos: 1,
-            resolution: '720p',
-            aspectRatio: '16:9'
+      let foundImage = false;
+      if (response.candidates?.[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData) {
+            const mimeType = part.inlineData.mimeType || 'image/png';
+            const data = part.inlineData.data;
+            const imageUrl = `data:${mimeType};base64,${data}`;
+            setAdaptedImageUrl(imageUrl);
+            await saveFile('videoToImageAdaptedImage', data, mimeType);
+            foundImage = true;
+            break;
           }
-        });
-
-        while (!operation.done) {
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          operation = await ai.operations.getVideosOperation({ operation: operation });
         }
-
-        const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-        if (!downloadLink) throw new Error("No video URI returned.");
-
-        const videoResponse = await fetch(downloadLink, {
-          method: 'GET',
-          headers: { 'x-goog-api-key': apiKey },
-        });
-        
-        if (!videoResponse.ok) throw new Error("Failed to fetch generated video.");
-        
-        const blob = await videoResponse.blob();
-        setAdaptedVideoUrl(URL.createObjectURL(blob));
       }
-      
+      if (!foundImage) throw new Error("No image was returned by the model.");
+
     } catch (err: any) {
       console.error("Adaptation error:", err);
-      const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
-      const errorMessage = errorString.toLowerCase();
-      
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found")) {
-          setError("You have exceeded your API quota or spending cap, or your API key is invalid. Please select a valid paid API key.");
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
-      } else {
-          setError(err.message || `Failed to generate ${adaptMode}.`);
-      }
+      setError(err.message || "Failed to generate image.");
     } finally {
       setIsAdapting(false);
     }
@@ -404,21 +397,6 @@ export function VideoToImageStudio() {
 
           {selectedFrame ? (
             <div className="space-y-4">
-              <div className="flex bg-white/5 p-1 rounded-lg">
-                <button
-                  onClick={() => setAdaptMode('image')}
-                  className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2 ${adaptMode === 'image' ? 'bg-white/10 text-white' : 'text-white/50 hover:text-white/80'}`}
-                >
-                  <ImageIcon className="w-4 h-4" /> Image
-                </button>
-                <button
-                  onClick={() => setAdaptMode('video')}
-                  className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2 ${adaptMode === 'video' ? 'bg-white/10 text-white' : 'text-white/50 hover:text-white/80'}`}
-                >
-                  <Video className="w-4 h-4" /> Video
-                </button>
-              </div>
-
               <textarea
                 value={adaptPrompt}
                 onChange={(e) => setAdaptPrompt(e.target.value)}
@@ -432,19 +410,14 @@ export function VideoToImageStudio() {
                 className="w-full py-2.5 bg-purple-500 hover:bg-purple-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {isAdapting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-                {isAdapting ? 'Synthesizing...' : `Generate ${adaptMode === 'image' ? 'Image' : 'Video'}`}
+                {isAdapting ? 'Synthesizing...' : 'Generate Image'}
               </button>
 
-              {(adaptedImageUrl || adaptedVideoUrl) && (
+              {adaptedImageUrl && (
                 <div className="mt-4 space-y-2">
                   <p className="text-xs font-medium text-white/50 uppercase tracking-wider">Result</p>
                   <div className="relative rounded-xl overflow-hidden aspect-video border border-purple-500/30 bg-black/50">
-                    {adaptedImageUrl && (
-                      <img src={adaptedImageUrl} alt="Adapted" className="w-full h-full object-contain" />
-                    )}
-                    {adaptedVideoUrl && (
-                      <video src={adaptedVideoUrl} controls autoPlay loop className="w-full h-full object-contain" />
-                    )}
+                    <img src={adaptedImageUrl} alt="Adapted" className="w-full h-full object-contain" />
                   </div>
                 </div>
               )}

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, GenerateContentResponse, ThinkingLevel } from '@google/genai';
 import { Send, Loader2, Search, MapPin, Brain, Image as ImageIcon, X, Flag, CheckCircle2 } from 'lucide-react';
 import Markdown from 'react-markdown';
+import { useAppStore } from '../store';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -28,15 +29,16 @@ interface Message {
 }
 
 export function Chatbot() {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: 'model', text: 'Hello! I am your AI assistant. I can search the web, check Google Maps, analyze images, and solve complex problems. How can I help you today?' }
-  ]);
-  const [input, setInput] = useState('');
+  const {
+    chatMessages: messages, setChatMessages: setMessages,
+    chatInput: input, setChatInput: setInput,
+    chatUseSearch: useSearch, setChatUseSearch: setUseSearch,
+    chatUseMaps: useMaps, setChatUseMaps: setUseMaps,
+    chatSystemInstruction: systemInstruction
+  } = useAppStore();
+
   const [image, setImage] = useState<{ data: string; mimeType: string; url: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [useSearch, setUseSearch] = useState(true);
-  const [useMaps, setUseMaps] = useState(false);
-  const [highThinking, setHighThinking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -76,8 +78,8 @@ export function Chatbot() {
     setIsLoading(true);
 
     try {
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("API Key is missing.");
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
 
       const ai = new GoogleGenAI({ apiKey });
       
@@ -86,7 +88,7 @@ export function Chatbot() {
       if (useMaps && !useSearch) tools.push({ googleMaps: {} });
 
       const config: any = {
-        systemInstruction: "You are a helpful, highly intelligent AI assistant.",
+        systemInstruction: systemInstruction || "You are a helpful, highly intelligent AI assistant.",
       };
 
       if (tools.length > 0) {
@@ -94,11 +96,7 @@ export function Chatbot() {
         config.toolConfig = { includeServerSideToolInvocations: true };
       }
 
-      if (highThinking) {
-        config.thinkingConfig = { thinkingLevel: ThinkingLevel.HIGH };
-      }
-
-      const modelName = highThinking ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+      const modelName = "gemini-3-flash-preview";
 
       // Convert history to contents format
       const contents = messages.map(m => {
@@ -148,11 +146,8 @@ export function Chatbot() {
       const errorString = typeof error === 'string' ? error : JSON.stringify(error, Object.getOwnPropertyNames(error));
       const errorMessage = errorString.toLowerCase();
       let errorText = error.message || 'Something went wrong.';
-      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap")) {
-          errorText = "You have exceeded your API quota or spending cap. Please select a valid API key with billing enabled.";
-          if (window.aistudio?.openSelectKey) {
-             window.aistudio.openSelectKey();
-          }
+      if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
+          errorText = "You have exceeded your API quota or spending cap. Please check your GEMINI_API_KEY.";
       }
       setMessages(prev => [...prev, { role: 'model', text: `Error: ${errorText}` }]);
     } finally {
@@ -179,12 +174,6 @@ export function Chatbot() {
             className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${useMaps ? 'bg-green-500/20 text-green-300 border border-green-500/30' : 'bg-white/5 text-white/50 border border-white/10'}`}
           >
             <MapPin className="w-3.5 h-3.5" /> Maps
-          </button>
-          <button 
-            onClick={() => setHighThinking(!highThinking)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${highThinking ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-white/5 text-white/50 border border-white/10'}`}
-          >
-            <Brain className="w-3.5 h-3.5" /> High Thinking
           </button>
         </div>
       </div>
