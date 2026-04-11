@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
+import { HfInference } from '@huggingface/inference';
 import { Loader2, Image as ImageIcon, Download, Sparkles, Settings2, Upload, X, Search, Flag, CheckCircle2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { saveFile, getFile, deleteFile } from '../lib/db';
@@ -118,94 +119,97 @@ export function ImageGenerator() {
     setGeneratedImage(null);
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("API Key is missing.");
+      const hfToken = process.env.HF_TOKEN;
+      if (!hfToken) {
+        throw new Error("HF_TOKEN is missing. Please add your Hugging Face token to the environment variables.");
       }
 
-      const ai = new GoogleGenAI({ apiKey });
-      const modelName = 'gemini-2.5-flash-image';
+      const hf = new HfInference(hfToken);
 
       let finalPrompt = prompt;
       
       if (activeTab === 'img2img' && referenceImage) {
         if (controlMode === 'relight') {
-          finalPrompt = `[IC-Light / Relighting Task] Strictly maintain the exact geometry, identity, and composition of the reference image. Completely replace the lighting with: ${lightingCondition}. ${prompt ? 'Additional details: ' + prompt : ''}`;
+          finalPrompt = `[Relighting] ${lightingCondition}. ${prompt}`;
         } else if (controlMode === 'structure') {
-          finalPrompt = `[ControlNet / Depth Task] Use the reference image strictly as a structural depth map and composition guide. Generate a completely new image based on this prompt: "${prompt}". The new image MUST perfectly match the shapes, poses, and layout of the reference.`;
+          finalPrompt = `[Depth/Structure] ${prompt}`;
         } else if (controlMode === 'material') {
-          finalPrompt = `[Intrinsic / Material Task] Keep the exact same lighting, shadows, and geometry of the reference image. Change the materials and textures of the subjects to match this description: "${prompt}".`;
+          finalPrompt = `[Material/Texture] ${prompt}`;
         } else if (controlMode === 'perspective') {
-          finalPrompt = `[RISE / Novel View Synthesis Task] Keep the exact same subjects, style, and lighting of the reference image, but change the camera angle and perspective to: "${prompt}".`;
+          finalPrompt = `[Perspective] ${prompt}`;
         } else if (controlMode === 'instruct') {
-          finalPrompt = `[InstructPix2Pix Task] Apply the following editing instruction to the reference image: "${prompt}". Keep everything else exactly the same.`;
+          finalPrompt = `${prompt}`;
         } else if (controlMode === 'style') {
-          finalPrompt = `[Style Transfer Task] Use the reference image STRICTLY for its visual style, color palette, and artistic medium. Do not copy its subjects or composition. Generate a completely new image of: "${prompt}" matching the exact style of the reference.`;
+          finalPrompt = `[Style Transfer] ${prompt}`;
         }
       }
 
       if (stylePreset !== 'none') {
         finalPrompt = `${stylePreset} style. ${finalPrompt}`;
       }
-      if (negativePrompt.trim()) {
-        finalPrompt = `${finalPrompt}. Do not include: ${negativePrompt}`;
-      }
+      
+      let generatedBlob: Blob;
 
-      const parts: any[] = [];
       if (activeTab === 'img2img' && referenceImage) {
-        parts.push({
-          inlineData: {
-            data: referenceImage.data,
-            mimeType: referenceImage.mimeType
+        // Convert base64 to Blob
+        const byteCharacters = atob(referenceImage.data);
+        const byteArrays = [];
+        for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+          const slice = byteCharacters.slice(offset, offset + 512);
+          const byteNumbers = new Array(slice.length);
+          for (let i = 0; i < slice.length; i++) {
+            byteNumbers[i] = slice.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          byteArrays.push(byteArray);
+        }
+        const imageBlob = new Blob(byteArrays, { type: referenceImage.mimeType });
+
+        // Use InstructPix2Pix for image editing
+        generatedBlob = await hf.imageToImage({
+          model: 'timbrooks/instruct-pix2pix',
+          inputs: imageBlob,
+          parameters: {
+            prompt: finalPrompt,
+            negative_prompt: negativePrompt || undefined,
+          }
+        });
+      } else {
+        // Text to Image using SDXL
+        generatedBlob = await hf.textToImage({
+          model: 'stabilityai/stable-diffusion-xl-base-1.0',
+          inputs: finalPrompt,
+          parameters: {
+            negative_prompt: negativePrompt || undefined,
           }
         });
       }
-      parts.push({ text: finalPrompt });
 
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: {
-          parts: parts
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: aspectRatio
-          }
-        }
-      });
-
-      let foundImage = false;
-      if (response.candidates?.[0]?.content?.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.inlineData) {
-            const mimeType = part.inlineData.mimeType || 'image/png';
-            const data = part.inlineData.data;
-            const imageUrl = `data:${mimeType};base64,${data}`;
-            setGeneratedImage(imageUrl);
-            await saveFile('imageGeneratorGeneratedImage', data, mimeType);
-            foundImage = true;
-            break;
-          }
-        }
+      // Convert generated Blob to base64
+      const arrayBuffer = await generatedBlob.arrayBuffer();
+      const buffer = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < buffer.byteLength; i++) {
+        binary += String.fromCharCode(buffer[i]);
       }
-
-      if (!foundImage) {
-        throw new Error("No image was returned by the model.");
-      }
+      const base64Data = btoa(binary);
+      const mimeType = generatedBlob.type || 'image/jpeg';
+      const imageUrl = `data:${mimeType};base64,${base64Data}`;
+      
+      setGeneratedImage(imageUrl);
+      await saveFile('imageGeneratorGeneratedImage', base64Data, mimeType);
 
     } catch (err: any) {
       console.error("Image generation error:", err);
       const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
       const errorMessage = errorString.toLowerCase();
       
-      if (errorMessage.includes("requested entity was not found")) {
-          setError("API key session expired or invalid. Please check your GEMINI_API_KEY.");
-      } else if (errorMessage.includes("quota") || errorMessage.includes("429") || errorMessage.includes("exhausted") || errorMessage.includes("spending cap") || errorMessage.includes("entity was not found") || errorMessage.includes("403") || errorMessage.includes("permission")) {
-          setError("You have exceeded your API quota or spending cap, or your API key does not have permission for this model. Please check your GEMINI_API_KEY.");
-      } else if (errorMessage.includes("safety") || errorMessage.includes("policy") || errorMessage.includes("blocked")) {
-          setError("The generated content was blocked by safety filters. Please try modifying your prompt or base image.");
+      if (errorMessage.includes("unauthorized") || errorMessage.includes("invalid token")) {
+          setError("Invalid Hugging Face token. Please check your HF_TOKEN.");
+      } else if (errorMessage.includes("model is loading")) {
+          setError("The model is currently loading on Hugging Face. Please try again in a few seconds.");
       } else {
-          setError(err.message || "Failed to generate image.");
+          setError(err.message || "An unexpected error occurred during image generation.");
       }
     } finally {
       setIsGenerating(false);
