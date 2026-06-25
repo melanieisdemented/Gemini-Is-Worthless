@@ -23,12 +23,12 @@ interface AppState {
   // Video Generator
   videoPrompt: string;
   videoAspectRatio: '16:9' | '9:16';
-  videoModel: 'veo-3.1-lite-generate-preview' | 'veo-3.1-generate-preview';
+  videoModel: 'veo-2.0-generate-preview' | 'tencent/HunyuanVideo-I2V';
   videoResolution: '720p' | '1080p' | '4k';
   videoDuration: number;
   setVideoPrompt: (p: string) => void;
   setVideoAspectRatio: (ar: '16:9' | '9:16') => void;
-  setVideoModel: (m: 'veo-3.1-lite-generate-preview' | 'veo-3.1-generate-preview') => void;
+  setVideoModel: (m: 'veo-2.0-generate-preview' | 'tencent/HunyuanVideo-I2V') => void;
   setVideoResolution: (r: '720p' | '1080p' | '4k') => void;
   setVideoDuration: (d: number) => void;
 
@@ -37,10 +37,12 @@ interface AppState {
   chatUseSearch: boolean;
   chatUseMaps: boolean;
   chatMessages: any[];
+  chatSystemInstruction: string;
   setChatInput: (s: string) => void;
   setChatUseSearch: (b: boolean) => void;
   setChatUseMaps: (b: boolean) => void;
-  setChatMessages: (m: any[]) => void;
+  setChatMessages: (m: any[] | ((prev: any[]) => any[])) => void;
+  setChatSystemInstruction: (s: string) => void;
 
   // Analyzer
   analyzerPrompt: string;
@@ -65,6 +67,14 @@ interface AppState {
   setLiveVoiceVoice: (v: string) => void;
   liveVoiceTranscript: any[];
   setLiveVoiceTranscript: (t: any[]) => void;
+
+  // API Usage Monitor
+  estimatedMonthlySpend: number;
+  maxMonthlySpendCap: number;
+  usageLogs: Array<{ id: string; timestamp: number; type: string; modelName: string; cost: number; details?: string }>;
+  incrementSpend: (cost: number, type: string, modelName: string, details?: string) => void;
+  resetUsageLogs: () => void;
+  setMaxMonthlySpendCap: (cap: number) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -88,7 +98,7 @@ export const useAppStore = create<AppState>()(
 
       videoPrompt: '',
       videoAspectRatio: '16:9',
-      videoModel: 'veo-3.1-lite-generate-preview',
+      videoModel: 'veo-2.0-generate-preview',
       videoResolution: '720p',
       videoDuration: 4,
       setVideoPrompt: (p) => set({ videoPrompt: p }),
@@ -103,10 +113,12 @@ export const useAppStore = create<AppState>()(
       chatMessages: [
         { role: 'model', text: 'Hello! I am your AI assistant. I can search the web, check Google Maps, analyze images, and solve complex problems. How can I help you today?' }
       ],
+      chatSystemInstruction: 'You are a helpful, highly intelligent AI assistant.',
       setChatInput: (s) => set({ chatInput: s }),
       setChatUseSearch: (b) => set({ chatUseSearch: b }),
       setChatUseMaps: (b) => set({ chatUseMaps: b }),
-      setChatMessages: (m) => set({ chatMessages: m }),
+      setChatMessages: (m) => set((state) => ({ chatMessages: typeof m === 'function' ? m(state.chatMessages) : m })),
+      setChatSystemInstruction: (s) => set({ chatSystemInstruction: s }),
 
       analyzerPrompt: '',
       setAnalyzerPrompt: (p) => set({ analyzerPrompt: p }),
@@ -126,6 +138,27 @@ export const useAppStore = create<AppState>()(
       setLiveVoiceVoice: (v) => set({ liveVoiceVoice: v }),
       liveVoiceTranscript: [],
       setLiveVoiceTranscript: (t) => set({ liveVoiceTranscript: t }),
+
+      // API Usage Monitor defaults
+      estimatedMonthlySpend: 0.00,
+      maxMonthlySpendCap: 10.00,
+      usageLogs: [],
+      incrementSpend: (cost, type, modelName, details) => set((state) => {
+        const newLog = {
+          id: Math.random().toString(36).substring(2, 9),
+          timestamp: Date.now(),
+          type,
+          modelName,
+          cost,
+          details
+        };
+        return {
+          estimatedMonthlySpend: parseFloat((state.estimatedMonthlySpend + cost).toFixed(4)),
+          usageLogs: [newLog, ...state.usageLogs]
+        };
+      }),
+      resetUsageLogs: () => set({ estimatedMonthlySpend: 0, usageLogs: [] }),
+      setMaxMonthlySpendCap: (cap) => set({ maxMonthlySpendCap: cap }),
     }),
     {
       name: 'app-storage',

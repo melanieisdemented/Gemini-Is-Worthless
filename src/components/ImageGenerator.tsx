@@ -4,6 +4,7 @@ import { HfInference } from '@huggingface/inference';
 import { Loader2, Image as ImageIcon, Download, Sparkles, Settings2, Upload, X, Search, Flag, CheckCircle2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import { saveFile, getFile, deleteFile } from '../lib/db';
+import { ContentResultModal } from './ContentResultModal';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -29,7 +30,8 @@ export function ImageGenerator() {
     imageAspectRatio: aspectRatio, setImageAspectRatio: setAspectRatio,
     imageControlMode: controlMode, setImageControlMode: setControlMode,
     imageLightingCondition: lightingCondition, setImageLightingCondition: setLightingCondition,
-    imageStylePreset: stylePreset, setImageStylePreset: setStylePreset
+    imageStylePreset: stylePreset, setImageStylePreset: setStylePreset,
+    incrementSpend
   } = useAppStore();
 
   const [activeTab, setActiveTab] = useState<'txt2img' | 'img2img'>('txt2img');
@@ -39,6 +41,7 @@ export function ImageGenerator() {
   const [referenceImage, setReferenceImage] = useState<{ data: string; mimeType: string; url: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -99,7 +102,8 @@ export function ImageGenerator() {
           ]
         }
       });
-      setPrompt(prev => prev ? `${prev}, ${response.text}` : response.text || "");
+      setPrompt(prompt ? `${prompt}, ${response.text}` : response.text || "");
+      incrementSpend(0.005, 'image_analyze', 'gemini-3-flash-preview');
     } catch (err: any) {
       console.error("Analysis error:", err);
       setError(err.message || "Failed to analyze the image.");
@@ -119,13 +123,6 @@ export function ImageGenerator() {
     setGeneratedImage(null);
 
     try {
-      const hfToken = process.env.HF_TOKEN;
-      if (!hfToken) {
-        throw new Error("HF_TOKEN is missing. Please add your Hugging Face token to the environment variables.");
-      }
-
-      const hf = new HfInference(hfToken);
-
       let finalPrompt = prompt;
       
       if (activeTab === 'img2img' && referenceImage) {
@@ -148,9 +145,18 @@ export function ImageGenerator() {
         finalPrompt = `${stylePreset} style. ${finalPrompt}`;
       }
       
-      let generatedBlob: Blob;
+      let generatedBlob: Blob | null = null;
+      let imageUrl = '';
+      let base64Data = '';
+      let mimeType = 'image/jpeg';
 
       if (activeTab === 'img2img' && referenceImage) {
+        const hfToken = process.env.HF_TOKEN;
+        if (!hfToken) {
+          throw new Error("HF_TOKEN is missing. Please add your Hugging Face token to the environment variables to use img2img features.");
+        }
+        const hf = new HfInference(hfToken);
+
         // Convert base64 to Blob
         const byteCharacters = atob(referenceImage.data);
         const byteArrays = [];
@@ -174,30 +180,59 @@ export function ImageGenerator() {
             negative_prompt: negativePrompt || undefined,
           }
         });
+
+        // Convert generated Blob to base64
+        const arrayBuffer = await generatedBlob.arrayBuffer();
+        const buffer = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < buffer.byteLength; i++) {
+          binary += String.fromCharCode(buffer[i]);
+        }
+        base64Data = btoa(binary);
+        mimeType = generatedBlob.type || 'image/jpeg';
+        imageUrl = `data:${mimeType};base64,${base64Data}`;
+
       } else {
-        // Text to Image using SDXL
-        generatedBlob = await hf.textToImage({
-          model: 'stabilityai/stable-diffusion-xl-base-1.0',
-          inputs: finalPrompt,
-          parameters: {
-            negative_prompt: negativePrompt || undefined,
+        // Text to Image using Gemini 2.5 Flash Image
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash-image',
+          contents: {
+            parts: [{ text: finalPrompt }]
+          },
+          config: {
+            imageConfig: {
+              aspectRatio: aspectRatio,
+            }
           }
         });
+
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData) {
+            base64Data = part.inlineData.data;
+            mimeType = part.inlineData.mimeType || 'image/png';
+            break;
+          }
+        }
+
+        if (!base64Data) {
+          throw new Error("Failed to generate image. No image returned.");
+        }
+        imageUrl = `data:${mimeType};base64,${base64Data}`;
       }
 
-      // Convert generated Blob to base64
-      const arrayBuffer = await generatedBlob.arrayBuffer();
-      const buffer = new Uint8Array(arrayBuffer);
-      let binary = '';
-      for (let i = 0; i < buffer.byteLength; i++) {
-        binary += String.fromCharCode(buffer[i]);
-      }
-      const base64Data = btoa(binary);
-      const mimeType = generatedBlob.type || 'image/jpeg';
-      const imageUrl = `data:${mimeType};base64,${base64Data}`;
-      
       setGeneratedImage(imageUrl);
+      setIsResultModalOpen(true);
       await saveFile('imageGeneratorGeneratedImage', base64Data, mimeType);
+      
+      if (activeTab === 'img2img' && referenceImage) {
+        incrementSpend(0.03, 'image_edit', 'instruct-pix2pix', prompt ? `Prompt: ${prompt.substring(0, 30)}...` : undefined);
+      } else {
+        incrementSpend(0.03, 'image_gen', 'gemini-2.5-flash-image', prompt ? `Prompt: ${prompt.substring(0, 30)}...` : undefined);
+      }
 
     } catch (err: any) {
       console.error("Image generation error:", err);
@@ -470,6 +505,14 @@ export function ImageGenerator() {
                     referrerPolicy="no-referrer"
                   />
                   <div className="absolute bottom-2 right-2 flex gap-2">
+                    <button
+                      onClick={() => setIsResultModalOpen(true)}
+                      className="bg-black/80 hover:bg-black text-white p-2 rounded-lg backdrop-blur-md transition-colors border border-white/10 cursor-pointer flex items-center gap-1.5 text-xs font-medium"
+                      title="Review & Share"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-[#ff4e00]" />
+                      Share
+                    </button>
                     <a
                       href={generatedImage}
                       download="generated-image.png"
@@ -508,6 +551,22 @@ export function ImageGenerator() {
           </div>
         </div>
       </div>
+
+      <ContentResultModal 
+        isOpen={isResultModalOpen} 
+        onClose={() => setIsResultModalOpen(false)} 
+        type="image" 
+        title="Generated AI Image" 
+        contentUrl={generatedImage} 
+        mimeType={generatedImage ? (generatedImage.includes('png') ? 'image/png' : 'image/jpeg') : 'image/png'}
+        prompt={prompt}
+        metadata={{
+          model: activeTab === 'img2img' ? 'instruct-pix2pix' : 'gemini-2.5-flash-image',
+          aspectRatio,
+          stylePreset: stylePreset !== 'none' ? stylePreset : undefined,
+          controlMode: activeTab === 'img2img' ? controlMode : undefined
+        }}
+      />
     </div>
   );
 }

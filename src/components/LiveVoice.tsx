@@ -21,7 +21,7 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function LiveVoice() {
-  const { liveVoiceVoice: voice, setLiveVoiceVoice: setVoice, liveVoiceTranscript: transcript, setLiveVoiceTranscript: setTranscript } = useAppStore();
+  const { liveVoiceVoice: voice, setLiveVoiceVoice: setVoice, liveVoiceTranscript: transcript, setLiveVoiceTranscript: setTranscript, incrementSpend } = useAppStore();
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +70,7 @@ export function LiveVoice() {
           onopen: () => {
             setIsConnected(true);
             setIsConnecting(false);
+            incrementSpend(0.01, 'voice_chat', 'gemini-3.1-flash-live-preview', 'Live Connection');
             
             processor.onaudioprocess = (e) => {
               if (!isConnected) return;

@@ -34,7 +34,8 @@ export function Chatbot() {
     chatInput: input, setChatInput: setInput,
     chatUseSearch: useSearch, setChatUseSearch: setUseSearch,
     chatUseMaps: useMaps, setChatUseMaps: setUseMaps,
-    chatSystemInstruction: systemInstruction
+    chatSystemInstruction: systemInstruction,
+    incrementSpend
   } = useAppStore();
 
   const [image, setImage] = useState<{ data: string; mimeType: string; url: string } | null>(null);
@@ -124,6 +125,8 @@ export function Chatbot() {
         contents: contents,
         config
       });
+
+      incrementSpend(0.002, 'chat', modelName, userMessage ? `User: ${userMessage.substring(0, 30)}...` : 'Image Chat');
 
       let responseText = response.text || "I couldn't generate a response.";
       

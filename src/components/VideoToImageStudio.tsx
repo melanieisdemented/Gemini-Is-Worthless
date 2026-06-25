@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Upload, Film, Image as ImageIcon, Search, Wand2, Loader2, Play, Pause, Scissors, Download, RefreshCw } from 'lucide-react';
+import { Upload, Film, Image as ImageIcon, Search, Wand2, Loader2, Play, Pause, Scissors, Download, RefreshCw, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppStore } from '../store';
 import { saveFile, getFile, deleteFile } from '../lib/db';
+import { ContentResultModal } from './ContentResultModal';
 
 interface ExtractedFrame {
   id: string;
@@ -15,7 +16,7 @@ interface ExtractedFrame {
 }
 
 export function VideoToImageStudio() {
-  const { videoToImagePrompt: adaptPrompt, setVideoToImagePrompt: setAdaptPrompt } = useAppStore();
+  const { videoToImagePrompt: adaptPrompt, setVideoToImagePrompt: setAdaptPrompt, incrementSpend } = useAppStore();
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [frames, setFrames] = useState<ExtractedFrame[]>([]);
@@ -26,6 +27,7 @@ export function VideoToImageStudio() {
   const [isAdapting, setIsAdapting] = useState(false);
   
   const [adaptedImageUrl, setAdaptedImageUrl] = useState<string | null>(null);
+  const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   
   const [error, setError] = useState<string | null>(null);
   
@@ -198,6 +200,7 @@ export function VideoToImageStudio() {
         const summary = response.text.split('.')[0] + '.';
         setAdaptPrompt(`Enhance this scene: ${summary}`);
       }
+      incrementSpend(0.005, 'image_analyze', 'gemini-3-flash-preview');
       
     } catch (err: any) {
       console.error("Analysis error:", err);
@@ -251,7 +254,9 @@ export function VideoToImageStudio() {
             const data = part.inlineData.data;
             const imageUrl = `data:${mimeType};base64,${data}`;
             setAdaptedImageUrl(imageUrl);
+            setIsResultModalOpen(true);
             await saveFile('videoToImageAdaptedImage', data, mimeType);
+            incrementSpend(0.03, 'image_adapt', 'gemini-2.5-flash-image', adaptPrompt ? `Adapt: ${adaptPrompt.substring(0, 30)}...` : undefined);
             foundImage = true;
             break;
           }
@@ -419,6 +424,23 @@ export function VideoToImageStudio() {
                   <div className="relative rounded-xl overflow-hidden aspect-video border border-purple-500/30 bg-black/50">
                     <img src={adaptedImageUrl} alt="Adapted" className="w-full h-full object-contain" />
                   </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setIsResultModalOpen(true)}
+                      className="flex-1 py-2 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/40 rounded-lg text-xs text-purple-300 font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Review & Share
+                    </button>
+                    <a
+                      href={adaptedImageUrl}
+                      download="adapted-frame.png"
+                      className="px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-xs text-white transition-colors flex items-center justify-center"
+                      title="Download"
+                    >
+                      <Download className="w-4 h-4" />
+                    </a>
+                  </div>
                 </div>
               )}
             </div>
@@ -436,6 +458,20 @@ export function VideoToImageStudio() {
           {error}
         </div>
       )}
+
+      <ContentResultModal 
+        isOpen={isResultModalOpen} 
+        onClose={() => setIsResultModalOpen(false)} 
+        type="adapted" 
+        title="Synthesized Adapt Image" 
+        contentUrl={adaptedImageUrl} 
+        mimeType="image/png"
+        prompt={adaptPrompt}
+        metadata={{
+          model: 'gemini-2.5-flash-image',
+          source: 'Video frame keyframe extraction'
+        }}
+      />
     </div>
   );
 }

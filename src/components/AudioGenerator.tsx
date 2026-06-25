@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { GoogleGenAI, Modality } from '@google/genai';
-import { Music, Mic, Loader2, AlertCircle, Play, Download, Flag, CheckCircle2, Radio } from 'lucide-react';
+import { Music, Mic, Loader2, AlertCircle, Play, Download, Flag, CheckCircle2, Radio, Sparkles } from 'lucide-react';
 import { LiveVoice } from './LiveVoice';
 import { useAppStore } from '../store';
 import { saveFile, getFile } from '../lib/db';
+import { ContentResultModal } from './ContentResultModal';
 
 const ReportIssueButton = ({ error }: { error: string }) => {
   const [reported, setReported] = useState(false);
@@ -23,11 +24,12 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function AudioGenerator() {
-  const { audioPrompt: prompt, setAudioPrompt: setPrompt, audioVoice: voice, setAudioVoice: setVoice } = useAppStore();
+  const { audioPrompt: prompt, setAudioPrompt: setPrompt, audioVoice: voice, setAudioVoice: setVoice, incrementSpend } = useAppStore();
   const [mode, setMode] = useState<'music' | 'tts' | 'live'>('music');
   const [musicDuration, setMusicDuration] = useState<'clip' | 'pro'>('clip');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedAudioUrl, setGeneratedAudioUrl] = useState<string | null>(null);
+  const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState(true);
 
@@ -90,7 +92,9 @@ export function AudioGenerator() {
         const blob = new Blob([bytes], { type: mimeType });
         const audioUrl = URL.createObjectURL(blob);
         setGeneratedAudioUrl(audioUrl);
+        setIsResultModalOpen(true);
         await saveFile('audioGeneratorGeneratedAudio', audioBase64, mimeType);
+        incrementSpend(0.01, 'audio_gen', model, prompt ? `Prompt: ${prompt.substring(0, 30)}...` : undefined);
 
       } else if (mode === 'tts') {
         // TTS
@@ -155,12 +159,14 @@ export function AudioGenerator() {
         const blob = new Blob([buffer], { type: 'audio/wav' });
         const audioUrl = URL.createObjectURL(blob);
         setGeneratedAudioUrl(audioUrl);
+        setIsResultModalOpen(true);
         
         // Convert buffer to base64 for storage
         const base64AudioData = btoa(
           new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
         );
         await saveFile('audioGeneratorGeneratedAudio', base64AudioData, 'audio/wav');
+        incrementSpend(0.005, 'tts', 'gemini-2.5-flash-preview-tts', prompt ? `Text: ${prompt.substring(0, 30)}...` : undefined);
       }
 
     } catch (err: any) {
@@ -293,11 +299,18 @@ export function AudioGenerator() {
         <div className="mt-8 p-6 bg-white/5 border border-white/10 rounded-2xl space-y-4">
           <h3 className="text-lg font-medium text-center">Generated Audio</h3>
           <audio controls src={generatedAudioUrl} className="w-full" autoPlay />
-          <div className="flex justify-center">
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => setIsResultModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-[#ff4e00]/20 hover:bg-[#ff4e00]/30 border border-[#ff4e00]/40 rounded-lg text-sm text-[#ff7d00] transition-colors cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              Review & Share
+            </button>
             <a
               href={generatedAudioUrl}
               download={`generated-${mode}.wav`}
-              className="flex items-center gap-2 text-sm text-white/50 hover:text-white transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm text-white transition-colors"
             >
               <Download className="w-4 h-4" />
               Download Audio
@@ -305,6 +318,23 @@ export function AudioGenerator() {
           </div>
         </div>
       )}
+
+      <ContentResultModal 
+        isOpen={isResultModalOpen} 
+        onClose={() => setIsResultModalOpen(false)} 
+        type="audio" 
+        title={mode === 'music' ? 'Generated AI Music' : 'Synthesized Speech'} 
+        contentUrl={generatedAudioUrl} 
+        mimeType="audio/wav"
+        prompt={prompt}
+        metadata={{
+          model: mode === 'music' 
+            ? (musicDuration === 'clip' ? 'lyria-3-clip-preview' : 'lyria-3-pro-preview')
+            : 'gemini-2.5-flash-preview-tts',
+          duration: mode === 'music' ? (musicDuration === 'clip' ? '30' : 'Full') : undefined,
+          voice: mode === 'tts' ? voice : undefined
+        }}
+      />
     </div>
   );
 }

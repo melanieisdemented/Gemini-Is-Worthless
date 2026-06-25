@@ -23,7 +23,7 @@ const ReportIssueButton = ({ error }: { error: string }) => {
 };
 
 export function Analyzer() {
-  const { analyzerPrompt: prompt, setAnalyzerPrompt: setPrompt } = useAppStore();
+  const { analyzerPrompt: prompt, setAnalyzerPrompt: setPrompt, incrementSpend } = useAppStore();
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [fileData, setFileData] = useState<{ data: string; mimeType: string } | null>(null);
@@ -108,6 +108,7 @@ export function Analyzer() {
       const responseText = response.text || "No analysis generated.";
       setResult(responseText);
       await saveFile('analyzerResult', responseText, 'text/plain');
+      incrementSpend(0.01, 'analyze', 'gemini-3.1-pro-preview', prompt ? `Prompt: ${prompt.substring(0, 30)}...` : undefined);
     } catch (err: any) {
       console.error("Analysis error:", err);
       const errorString = typeof err === 'string' ? err : JSON.stringify(err, Object.getOwnPropertyNames(err));
