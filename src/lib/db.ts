@@ -8,13 +8,37 @@ export interface FileRecord {
   timestamp: number;
 }
 
+export interface VideoJob {
+  id?: number;
+  prompt: string;
+  seed: number;
+  resolution: string;
+  model: string;
+  duration: number; // Duration in seconds
+  sourceImageName?: string;
+  sourceImageData?: string; // base64 representation if available
+  sourceImageMimeType?: string;
+  outputVideoPath?: string; // Saved path or url
+  outputVideoData?: string; // base64 for fallback preview
+  outputVideoMimeType?: string; // video/mp4
+  status: 'draft' | 'queued' | 'running' | 'failed' | 'complete';
+  error?: string;
+  progress: number; // 0 to 100
+  backendType: 'comfyui' | 'gradio' | 'wan2gp';
+  backendJobId?: string;
+  createdAt: number;
+  completedAt?: number;
+}
+
 export class AppDatabase extends Dexie {
   files!: Table<FileRecord, number>;
+  videoJobs!: Table<VideoJob, number>;
 
   constructor() {
     super('AppStorageDB');
-    this.version(1).stores({
-      files: '++id, key, timestamp'
+    this.version(2).stores({
+      files: '++id, key, timestamp',
+      videoJobs: '++id, status, createdAt'
     });
   }
 }
@@ -39,3 +63,4 @@ export const getFile = async (key: string) => {
 export const deleteFile = async (key: string) => {
   await db.files.where('key').equals(key).delete();
 };
+

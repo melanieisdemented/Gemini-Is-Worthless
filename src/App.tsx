@@ -8,6 +8,7 @@ env.allowLocalModels = false;
 import { motion, AnimatePresence } from 'motion/react';
 import { Chatbot } from './components/Chatbot';
 import { ImageGenerator } from './components/ImageGenerator';
+import { MultiReference } from './components/MultiReference';
 import { Analyzer } from './components/Analyzer';
 import { AudioGenerator } from './components/AudioGenerator';
 import { VideoToImageStudio } from './components/VideoToImageStudio';
@@ -1305,6 +1306,13 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
             Alternate Angles
           </button>
           <button 
+            onClick={() => { setActiveTab('multi-reference'); setError(null); }}
+            className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'multi-reference' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+          >
+            <Sparkles className="w-4 h-4 text-[#ff4e00]" />
+            Multi-Reference
+          </button>
+          <button 
             onClick={() => { setActiveTab('depth'); setError(null); }}
             className={`px-6 py-3 rounded-full font-medium transition-colors flex items-center gap-2 ${activeTab === 'depth' ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
           >
@@ -2514,6 +2522,14 @@ CRITICAL INSTRUCTIONS FOR 3D PERSPECTIVE:
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="max-w-6xl mx-auto">
               <ImageGenerator />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'multi-reference' && (
+          <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="max-w-6xl mx-auto">
+              <MultiReference />
             </div>
           </div>
         )}

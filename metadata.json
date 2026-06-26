@@ -1,5 +1,5 @@
 {
   "name": "Scene Generator",
-  "description": "Generate a video scene from a starting and ending frame using Veo.",
+  "description": "Local-first AI video controller app and job management dashboard for local generation backends.",
   "requestFramePermissions": []
 }
